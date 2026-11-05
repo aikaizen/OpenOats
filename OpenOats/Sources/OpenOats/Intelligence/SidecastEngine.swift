@@ -347,7 +347,7 @@ final class SidecastEngine {
 
         // Pass 2: ALLCAPS tokens of 2+ letters as standalone queries (if not already captured)
         for word in words {
-            guard results.count + seen.filter({ _ in true }).count < cap * 2 else { break }
+            guard results.count < cap else { break }
             let stripped = word.trimmingCharacters(in: CharacterSet.punctuationCharacters)
             guard stripped.count >= 2 else { continue }
             let upper = stripped.uppercased()

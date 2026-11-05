@@ -40,14 +40,20 @@ private struct PersonaCardList: View {
     @State private var now: Date = .now
 
     var body: some View {
+        let effectiveLifetime: Double = settings.sidecastBubbleLifetimeSeconds > 0
+            ? settings.sidecastBubbleLifetimeSeconds
+            : Double.infinity
+        let isGenerating = engine?.isGenerating ?? false
+
         ScrollView {
             LazyVStack(spacing: 14) {
                 ForEach(settings.enabledSidecastPersonas) { persona in
                     SidecastPersonaCard(
                         persona: persona,
-                        message: engine?.message(for: persona.id),
+                        messages: engine?.messages(for: persona.id) ?? [],
                         now: now,
-                        lifetime: settings.sidecastIntensity.bubbleLifetimeSeconds
+                        lifetime: effectiveLifetime,
+                        isGenerating: isGenerating
                     )
                 }
             }
@@ -106,18 +112,19 @@ private struct SidecastHeader: View {
 
 private struct SidecastPersonaCard: View {
     let persona: SidecastPersona
-    let message: SidecastMessage?
+    let messages: [SidecastMessage]
     let now: Date
     let lifetime: TimeInterval
+    let isGenerating: Bool
 
-    private var visibleMessage: SidecastMessage? {
-        guard let message else { return nil }
-        guard now.timeIntervalSince(message.timestamp) <= lifetime else { return nil }
-        return message
+    private var visibleMessages: [SidecastMessage] {
+        guard lifetime > 0 else { return messages }
+        return messages.filter { now.timeIntervalSince($0.timestamp) <= lifetime }
     }
 
-    private var timeAgoText: String? {
-        guard let message = visibleMessage else { return nil }
+    private var visibleMessage: SidecastMessage? { visibleMessages.first }
+
+    private func timeAgoString(for message: SidecastMessage) -> String? {
         let elapsed = Int(now.timeIntervalSince(message.timestamp))
         if elapsed < 5 { return "just now" }
         if elapsed < 60 { return "\(elapsed)s ago" }
@@ -154,7 +161,6 @@ private struct SidecastPersonaCard: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.white.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true)
-                        .lineLimit(4)
                         .transition(.opacity.combined(with: .move(edge: .top)))
 
                     // Confidence + time
@@ -169,15 +175,31 @@ private struct SidecastPersonaCard: View {
                             Text("·")
                                 .foregroundStyle(.white.opacity(0.3))
                         }
-                        if let timeAgo = timeAgoText {
+                        if let timeAgo = timeAgoString(for: visibleMessage) {
                             Spacer()
                             Text(timeAgo)
                                 .font(.system(size: 10))
                                 .foregroundStyle(.white.opacity(0.4))
                         }
                     }
+
+                    // Older messages
+                    ForEach(Array(visibleMessages.dropFirst()), id: \.id) { older in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(older.text)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white.opacity(0.5))
+                                .lineLimit(3)
+                            if let timeAgo = timeAgoString(for: older) {
+                                Text(timeAgo)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.white.opacity(0.3))
+                            }
+                        }
+                        .padding(.top, 6)
+                    }
                 } else {
-                    Text("Processing…")
+                    Text(isGenerating ? "Thinking…" : "Listening…")
                         .font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.25))
                         .italic()

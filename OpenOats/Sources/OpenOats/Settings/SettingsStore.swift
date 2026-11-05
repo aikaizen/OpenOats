@@ -637,6 +637,28 @@ final class SettingsStore {
             }
         }
     }
+    @ObservationIgnored nonisolated(unsafe) private var _sidecastBubbleLifetimeSeconds: Double
+    var sidecastBubbleLifetimeSeconds: Double {
+        get { access(keyPath: \.sidecastBubbleLifetimeSeconds); return _sidecastBubbleLifetimeSeconds }
+        set {
+            withMutation(keyPath: \.sidecastBubbleLifetimeSeconds) {
+                _sidecastBubbleLifetimeSeconds = newValue
+                defaults.set(newValue, forKey: "sidecastBubbleLifetimeSeconds")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _sidecastHistoryPerPersona: Int
+    var sidecastHistoryPerPersona: Int {
+        get { access(keyPath: \.sidecastHistoryPerPersona); return _sidecastHistoryPerPersona }
+        set {
+            withMutation(keyPath: \.sidecastHistoryPerPersona) {
+                _sidecastHistoryPerPersona = newValue
+                defaults.set(newValue, forKey: "sidecastHistoryPerPersona")
+            }
+        }
+    }
+
 
     @ObservationIgnored nonisolated(unsafe) private var _preFetchIntervalSeconds: Double
     var preFetchIntervalSeconds: Double {
@@ -1545,6 +1567,10 @@ final class SettingsStore {
         self._sidecastSystemPrompt = defaults.string(forKey: "sidecastSystemPrompt") ?? ""
         self._sidecastMinValueThreshold = defaults.object(forKey: "sidecastMinValueThreshold") != nil
             ? defaults.double(forKey: "sidecastMinValueThreshold") : 0.5
+        self._sidecastBubbleLifetimeSeconds = defaults.object(forKey: "sidecastBubbleLifetimeSeconds") != nil
+            ? defaults.double(forKey: "sidecastBubbleLifetimeSeconds") : 0.0
+        self._sidecastHistoryPerPersona = defaults.object(forKey: "sidecastHistoryPerPersona") != nil
+            ? defaults.integer(forKey: "sidecastHistoryPerPersona") : 3
         self._preFetchIntervalSeconds = defaults.object(forKey: "preFetchIntervalSeconds") != nil
             ? defaults.double(forKey: "preFetchIntervalSeconds") : 4.0
         self._kbSimilarityThreshold = defaults.object(forKey: "kbSimilarityThreshold") != nil

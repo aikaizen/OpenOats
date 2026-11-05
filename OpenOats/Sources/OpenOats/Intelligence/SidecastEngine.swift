@@ -4,10 +4,10 @@ import Observation
 @Observable
 @MainActor
 final class SidecastEngine {
-    @ObservationIgnored nonisolated(unsafe) private var _messages: [SidecastMessage] = []
-    private(set) var messages: [SidecastMessage] {
-        get { access(keyPath: \.messages); return _messages }
-        set { withMutation(keyPath: \.messages) { _messages = newValue } }
+    @ObservationIgnored nonisolated(unsafe) private var _messagesByPersona: [UUID: [SidecastMessage]] = [:]
+    private(set) var messagesByPersona: [UUID: [SidecastMessage]] {
+        get { access(keyPath: \.messagesByPersona); return _messagesByPersona }
+        set { withMutation(keyPath: \.messagesByPersona) { _messagesByPersona = newValue } }
     }
 
     @ObservationIgnored nonisolated(unsafe) private var _isGenerating = false
@@ -17,7 +17,8 @@ final class SidecastEngine {
     }
 
     var suggestions: [Suggestion] {
-        messages
+        messagesByPersona.values
+            .flatMap { $0 }
             .sorted { $0.timestamp > $1.timestamp }
             .map { Suggestion(text: "\($0.personaName): \($0.text)") }
     }
@@ -124,14 +125,18 @@ final class SidecastEngine {
         }
     }
 
+    func messages(for personaID: UUID) -> [SidecastMessage] {
+        messagesByPersona[personaID] ?? []
+    }
+
     func message(for personaID: UUID) -> SidecastMessage? {
-        messages.first(where: { $0.personaID == personaID })
+        messages(for: personaID).first
     }
 
     func clear() {
         generationTask?.cancel()
         generationTask = nil
-        messages.removeAll()
+        messagesByPersona.removeAll()
         isGenerating = false
         activeGenerationID = nil
         lastProcessedUtteranceID = nil
@@ -212,9 +217,13 @@ final class SidecastEngine {
 
         guard !accepted.isEmpty else { return }
 
-        var updated = Dictionary(uniqueKeysWithValues: messages.map { ($0.personaID, $0) })
+        var updated = messagesByPersona
         for message in accepted {
-            updated[message.personaID] = message
+            var history = updated[message.personaID] ?? []
+            history.insert(message, at: 0)
+            let limit = settings.sidecastHistoryPerPersona
+            if history.count > limit { history = Array(history.prefix(limit)) }
+            updated[message.personaID] = history
             self.lastSpokenAtByPersona[message.personaID] = message.timestamp
             recentBubbleTexts.append(message.text)
         }
@@ -222,10 +231,7 @@ final class SidecastEngine {
             recentBubbleTexts.removeFirst(recentBubbleTexts.count - 12)
         }
 
-        messages = updated.values.sorted { lhs, rhs in
-            if lhs.timestamp != rhs.timestamp { return lhs.timestamp > rhs.timestamp }
-            return lhs.personaName < rhs.personaName
-        }
+        messagesByPersona = updated
     }
 
     private static let sanitizePatterns: [(NSRegularExpression, String)] = {

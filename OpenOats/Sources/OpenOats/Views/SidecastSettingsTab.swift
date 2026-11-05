@@ -121,6 +121,37 @@ struct SidecastSettingsTab: View {
                     Text("Messages with value below threshold are filtered out.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+
+                    Picker("Bubble Lifetime", selection: $settings.sidecastBubbleLifetimeSeconds) {
+                        Text("Until replaced").tag(0.0)
+                        Text("30 s").tag(30.0)
+                        Text("60 s").tag(60.0)
+                        Text("2 min").tag(120.0)
+                        Text("5 min").tag(300.0)
+                    }
+                    .font(.system(size: 12))
+
+                    Text("How long a persona bubble stays visible. \"Until replaced\" keeps it until the next message arrives.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Text("History per Persona")
+                            .font(.system(size: 12))
+                        Spacer()
+                        Stepper(
+                            value: $settings.sidecastHistoryPerPersona,
+                            in: 1...10
+                        ) {
+                            Text("\(settings.sidecastHistoryPerPersona)")
+                                .font(.system(size: 12))
+                                .frame(width: 24, alignment: .trailing)
+                        }
+                    }
+
+                    Text("Number of recent messages kept per persona (1 = only the newest).")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("System Prompt") {

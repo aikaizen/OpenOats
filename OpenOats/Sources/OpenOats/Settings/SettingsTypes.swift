@@ -215,6 +215,7 @@ enum PersonaVerbosity: String, CaseIterable, Identifiable, Codable {
     case terse
     case short
     case medium
+    case long
 
     var id: String { rawValue }
 
@@ -223,6 +224,7 @@ enum PersonaVerbosity: String, CaseIterable, Identifiable, Codable {
         case .terse: "Terse"
         case .short: "Short"
         case .medium: "Medium"
+        case .long: "Long"
         }
     }
 
@@ -231,6 +233,7 @@ enum PersonaVerbosity: String, CaseIterable, Identifiable, Codable {
         case .terse: 80
         case .short: 140
         case .medium: 220
+        case .long: 480
         }
     }
 }

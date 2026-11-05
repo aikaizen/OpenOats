@@ -7,6 +7,7 @@ final class AppUpdaterController {
     private let userDriver: OpenOatsUserDriver
     private let delegateProxy: AppUpdaterDelegateProxy
     private var shouldRestoreAccessoryModeAfterUpdateCycle = false
+    private(set) var updatesDisabled = false
 
     init(startUpdater: Bool = true) {
         let hostBundle = Bundle.main
@@ -19,6 +20,14 @@ final class AppUpdaterController {
             delegate: delegateProxy
         )
         delegateProxy.owner = self
+
+        // When the bundle has no SUFeedURL (e.g. DISABLE_SPARKLE=1 local build),
+        // disable Sparkle entirely; the binary still links the framework.
+        let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
+        if feedURL == nil || feedURL!.isEmpty {
+            updatesDisabled = true
+            return
+        }
 
         guard startUpdater else { return }
 
@@ -43,6 +52,17 @@ final class AppUpdaterController {
     }
 
     func checkForUpdatesFromMenuBar() {
+        if updatesDisabled {
+            NSApp.activate(ignoringOtherApps: true)
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+            let alert = NSAlert()
+            alert.messageText = "Updates Are Managed Manually"
+            alert.informativeText = "This is a locally built OpenOats (\(version)). Rebuild it from your fork branch to update; see docs/brain-sidecast.md."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
         let launchedFromAccessoryMode = NSApp.activationPolicy() == .accessory
         shouldRestoreAccessoryModeAfterUpdateCycle = launchedFromAccessoryMode
 

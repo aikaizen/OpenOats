@@ -118,3 +118,25 @@ system audio and calendar access on first launch. Sparkle update checks are
 turned off so the release channel cannot overwrite the custom build; pull
 upstream changes by rebasing this branch instead. Keep a copy of the signed
 release bundle to revert.
+
+## Staying safe across upstream updates
+
+Build with `DISABLE_SPARKLE=1` so the bundle has no Sparkle feed URL. A manual
+"Check for Updates" will show an alert instead of contacting the upstream server,
+and automatic checks are suppressed regardless of user-defaults state.
+
+Keep the app version above the upstream latest tag. Convention for this branch:
+`upstream_major.(upstream_minor+1).0-brain` (e.g. `1.91.1-brain`). Even if a
+feed URL somehow becomes present, Sparkle will not offer a *downgrade*, so the
+locally built version never gets replaced by the release channel silently.
+
+To pull upstream changes: `git fetch origin && git rebase origin/main` on
+`feature/brain-sidecast`, resolve any conflicts, then rebuild and reinstall:
+
+```sh
+DISABLE_SPARKLE=1 SKIP_SIGN=1 APP_VERSION=1.91.1-brain ./scripts/build_swift_app.sh
+# then re-sign ad-hoc and ditto as shown in "Installing a custom build" above
+```
+
+Never install the upstream DMG or the Homebrew cask over the fork — either will
+overwrite the binary and drop all branch changes.

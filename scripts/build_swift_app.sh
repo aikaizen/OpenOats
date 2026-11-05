@@ -11,6 +11,9 @@ set -euo pipefail
 # For smoke checks without code signing or installation:
 #   SKIP_SIGN=1 SKIP_INSTALL=1 ./scripts/build_swift_app.sh
 #
+# To strip the Sparkle feed URL from a local build (recommended for custom builds):
+#   DISABLE_SPARKLE=1 SKIP_SIGN=1 SKIP_INSTALL=1 APP_VERSION=1.91.1-brain ./scripts/build_swift_app.sh
+#
 # The bundle version is derived from the latest git tag; override explicitly with:
 #   APP_VERSION=1.82.0 ./scripts/build_swift_app.sh
 #
@@ -77,6 +80,14 @@ if [[ -n "$APP_VERSION" ]]; then
   echo "Set bundle version to $APP_VERSION"
 else
   echo "Warning: no git tag found and APP_VERSION unset; bundle keeps placeholder version"
+fi
+
+# Remove Sparkle feed URL for locally built forks so a manual "Check for Updates"
+# cannot offer the upstream release. The framework is still copied and linked.
+if [[ "${DISABLE_SPARKLE:-0}" == "1" ]]; then
+  /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP_DIR/Contents/Info.plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$APP_DIR/Contents/Info.plist"
+  echo "Sparkle feed removed (DISABLE_SPARKLE=1)"
 fi
 
 # Copy app icon

@@ -50,6 +50,7 @@ private struct PersonaCardList: View {
                 ForEach(settings.enabledSidecastPersonas) { persona in
                     SidecastPersonaCard(
                         persona: persona,
+                        engine: engine,
                         messages: engine?.messages(for: persona.id) ?? [],
                         now: now,
                         lifetime: effectiveLifetime,
@@ -112,10 +113,13 @@ private struct SidecastHeader: View {
 
 private struct SidecastPersonaCard: View {
     let persona: SidecastPersona
+    let engine: SidecastEngine?
     let messages: [SidecastMessage]
     let now: Date
     let lifetime: TimeInterval
     let isGenerating: Bool
+
+    @State private var isExpanded = false
 
     private var visibleMessages: [SidecastMessage] {
         guard lifetime > 0 else { return messages }
@@ -134,12 +138,11 @@ private struct SidecastPersonaCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Avatar
-            personaAvatar
-                .frame(width: 56, height: 56)
+            PersonaAvatarCircle(persona: persona, size: 56)
 
             // Content
             VStack(alignment: .leading, spacing: 6) {
-                // Name + subtitle badge
+                // Name + subtitle badge + expand button
                 HStack(spacing: 8) {
                     Text(persona.name)
                         .font(.system(size: 14, weight: .bold))
@@ -153,15 +156,31 @@ private struct SidecastPersonaCard: View {
                         .background(
                             Capsule().fill(persona.avatarTint.bubbleColor)
                         )
+
+                    Spacer()
+
+                    // Expand / collapse toggle
+                    Button {
+                        isExpanded.toggle()
+                    } label: {
+                        Image(systemName: isExpanded
+                              ? "arrow.down.right.and.arrow.up.left"
+                              : "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
+                    .buttonStyle(.plain)
+                    .help(isExpanded ? "Collapse" : "Expand history")
                 }
 
-                // Message text
+                // Message text — tapping it also opens the popover
                 if let visibleMessage {
                     Text(visibleMessage.text)
                         .font(.system(size: 13))
                         .foregroundStyle(.white.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true)
                         .transition(.opacity.combined(with: .move(edge: .top)))
+                        .onTapGesture { isExpanded.toggle() }
 
                     // Confidence + time
                     HStack(spacing: 6) {
@@ -213,36 +232,27 @@ private struct SidecastPersonaCard: View {
                 .fill(persona.avatarTint.bubbleColor.opacity(0.18))
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(persona.avatarTint.bubbleColor.opacity(0.25), lineWidth: 1)
+                        .stroke(persona.avatarTint.bubbleColor.opacity(isExpanded ? 0.55 : 0.25), lineWidth: 1)
                 )
         )
         .animation(.easeInOut(duration: 0.3), value: visibleMessage?.id)
-    }
-
-    private var personaAvatar: some View {
-        ZStack {
-            Circle()
-                .fill(persona.avatarTint.bubbleColor.opacity(0.3))
-            Circle()
-                .stroke(persona.avatarTint.bubbleColor.opacity(0.5), lineWidth: 2)
-
-            if let image = avatarImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .clipShape(Circle())
-                    .padding(2)
-            } else {
-                Image(systemName: persona.avatarSymbol)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(persona.avatarTint.bubbleColor)
+        .popover(isPresented: $isExpanded, arrowEdge: .trailing) {
+            if let engine {
+                SidecastPersonaHistoryView(
+                    persona: persona,
+                    engine: engine,
+                    onOpenInWindow: {
+                        isExpanded = false
+                        SidecastWindowManager.shared.openWindow(for: persona, engine: engine)
+                    },
+                    onDismiss: { isExpanded = false }
+                )
+                .onKeyPress(.escape) {
+                    isExpanded = false
+                    return .handled
+                }
             }
         }
-    }
-
-    private var avatarImage: NSImage? {
-        guard persona.avatarUsesImage else { return nil }
-        return NSImage(contentsOfFile: persona.avatarImagePath)
     }
 }
 

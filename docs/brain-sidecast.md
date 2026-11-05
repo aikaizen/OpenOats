@@ -31,8 +31,15 @@ Display (`Views/SidecastPanelContent.swift`, `Views/SidecastSettingsTab.swift`)
   settings tab exposes it as "Bubble Lifetime".
 - The newest message per persona renders in full. Older ones sit below it,
   dimmer, clipped to three lines, with a time-ago label.
-- The empty-state placeholder reads "Listening…" normally and "Thinking…" while
-  a generation is in flight. Stock OpenOats showed "Processing…" in both cases.
+- Clicking the newest message text or the expand icon (⤡) in a card header opens a
+  **popover** with the persona's full session history: every message newest first,
+  full text (selectable), absolute timestamp plus time-ago, and a per-message copy
+  button. Escape or clicking the icon again closes it. An "Open in Window" button
+  in the popover header detaches it into a resizable **NSWindow** titled
+  "<persona name> — Sidecast"; each persona gets its own window; reopening focuses
+  the existing one. The engine retains up to max(50, sidecastHistoryPerPersona)
+  messages per persona for the pop-open view (the card still shows only
+  sidecastHistoryPerPersona).
 
 ## Setting it up without the UI
 

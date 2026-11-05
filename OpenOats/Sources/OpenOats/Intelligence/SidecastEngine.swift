@@ -10,6 +10,15 @@ final class SidecastEngine {
         set { withMutation(keyPath: \.messagesByPersona) { _messagesByPersona = newValue } }
     }
 
+    // Full session history per persona, capped at max(50, sidecastHistoryPerPersona).
+    // `messagesByPersona` is trimmed to the card display count; this backing store keeps
+    // the full depth so the pop-open history view has access to the whole session.
+    @ObservationIgnored nonisolated(unsafe) private var _fullHistoryByPersona: [UUID: [SidecastMessage]] = [:]
+    private(set) var fullHistoryByPersona: [UUID: [SidecastMessage]] {
+        get { access(keyPath: \.fullHistoryByPersona); return _fullHistoryByPersona }
+        set { withMutation(keyPath: \.fullHistoryByPersona) { _fullHistoryByPersona = newValue } }
+    }
+
     @ObservationIgnored nonisolated(unsafe) private var _isGenerating = false
     private(set) var isGenerating: Bool {
         get { access(keyPath: \.isGenerating); return _isGenerating }
@@ -133,10 +142,17 @@ final class SidecastEngine {
         messages(for: personaID).first
     }
 
+    /// All messages kept for this persona during the session (up to max(50, sidecastHistoryPerPersona)),
+    /// newest first. Used by the pop-open history view.
+    func allMessages(for personaID: UUID) -> [SidecastMessage] {
+        fullHistoryByPersona[personaID] ?? []
+    }
+
     func clear() {
         generationTask?.cancel()
         generationTask = nil
         messagesByPersona.removeAll()
+        fullHistoryByPersona.removeAll()
         isGenerating = false
         activeGenerationID = nil
         lastProcessedUtteranceID = nil
@@ -218,12 +234,20 @@ final class SidecastEngine {
         guard !accepted.isEmpty else { return }
 
         var updated = messagesByPersona
+        var updatedFull = fullHistoryByPersona
         for message in accepted {
             var history = updated[message.personaID] ?? []
             history.insert(message, at: 0)
             let limit = settings.sidecastHistoryPerPersona
             if history.count > limit { history = Array(history.prefix(limit)) }
             updated[message.personaID] = history
+
+            var fullHistory = updatedFull[message.personaID] ?? []
+            fullHistory.insert(message, at: 0)
+            let fullLimit = max(50, limit)
+            if fullHistory.count > fullLimit { fullHistory = Array(fullHistory.prefix(fullLimit)) }
+            updatedFull[message.personaID] = fullHistory
+
             self.lastSpokenAtByPersona[message.personaID] = message.timestamp
             recentBubbleTexts.append(message.text)
         }
@@ -232,6 +256,7 @@ final class SidecastEngine {
         }
 
         messagesByPersona = updated
+        fullHistoryByPersona = updatedFull
     }
 
     private static let sanitizePatterns: [(NSRegularExpression, String)] = {

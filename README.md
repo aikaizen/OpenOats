@@ -125,6 +125,8 @@ The cache is validated against the selected folders and current file contents be
 
 Works well with meeting prep docs, research notes, pitch decks, competitive analysis, customer briefs — anything you'd want at your fingertips during a call.
 
+To run Sidecast over a personal wiki, configure OpenOats from the command line, or keep the index fresh from an external process, see [docs/brain-sidecast.md](docs/brain-sidecast.md).
+
 ## Privacy
 
 - Speech is transcribed locally — audio never leaves your Mac

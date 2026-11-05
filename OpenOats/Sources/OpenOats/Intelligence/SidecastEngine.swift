@@ -71,7 +71,11 @@ final class SidecastEngine {
         generationTask = Task { [weak self] in
             guard let self else { return }
 
-            let evidence = await self.loadEvidence(for: utterance.text)
+            let evidence = await self.loadEvidence(
+                for: utterance.text,
+                recentExchange: recentExchange,
+                conversationState: conversationState
+            )
             let prompt = self.buildPrompt(
                 utterance: utterance,
                 recentExchange: recentExchange,
@@ -252,9 +256,106 @@ final class SidecastEngine {
         return String(collapsed.prefix(limit)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func loadEvidence(for text: String) async -> [KBContextPack] {
+    /// Builds a deduplicated set of queries from the available conversation context and
+    /// runs a single multi-query KB search with score fusion (max-cosine, built into searchRaw).
+    /// Returns up to 8 packs, deduped by relativePath keeping the highest-score entry.
+    private func loadEvidence(
+        for utteranceText: String,
+        recentExchange: [Utterance],
+        conversationState: ConversationState
+    ) async -> [KBContextPack] {
         guard !settings.kbFolderURLs.isEmpty else { return [] }
-        return await knowledgeBase.searchContextPacks(queries: [text], topK: 3)
+
+        var queries: [String] = []
+
+        // 1. Latest utterance (as before)
+        let trimmedUtterance = utteranceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedUtterance.isEmpty { queries.append(trimmedUtterance) }
+
+        // 2. Recent exchange joined (last ~6 utterances, both speakers)
+        let exchangeText = recentExchange.suffix(6).map(\.text).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !exchangeText.isEmpty && exchangeText != trimmedUtterance {
+            queries.append(exchangeText)
+        }
+
+        // 3. Conversation state topic / summary
+        let topic = conversationState.currentTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !topic.isEmpty { queries.append(topic) }
+        let summary = conversationState.shortSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !summary.isEmpty && summary != topic { queries.append(summary) }
+
+        // 4. Capitalized multi-word phrases and ALLCAPS acronyms from recent exchange
+        let phraseQueries = Self.extractProperNounQueries(from: exchangeText, cap: 6)
+        queries.append(contentsOf: phraseQueries)
+
+        // Dedupe while preserving insertion order
+        var seen = Set<String>()
+        let uniqueQueries = queries.filter { seen.insert($0).inserted }
+
+        let raw = await knowledgeBase.searchContextPacks(queries: uniqueQueries, topK: 8)
+
+        // Dedupe by relativePath: keep highest-score pack per path, then re-sort by score
+        var bestByPath: [String: KBContextPack] = [:]
+        for pack in raw {
+            if let existing = bestByPath[pack.relativePath] {
+                if pack.score > existing.score { bestByPath[pack.relativePath] = pack }
+            } else {
+                bestByPath[pack.relativePath] = pack
+            }
+        }
+        return bestByPath.values.sorted { $0.score > $1.score }
+    }
+
+    /// Extracts short queries from capitalized multi-word runs and ALLCAPS tokens (acronyms).
+    /// E.g. "OpenAI GPT-4 launched" → ["OpenAI GPT-4"], "NASA" → ["NASA"].
+    /// Returns at most `cap` unique non-empty strings, each ≤ 60 chars.
+    private static func extractProperNounQueries(from text: String, cap: Int) -> [String] {
+        guard !text.isEmpty else { return [] }
+
+        var results: [String] = []
+        var seen = Set<String>()
+
+        // Pass 1: runs of Capitalized words (including hyphenated tokens)
+        let words = text.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        var runStart: Int? = nil
+        func flushRun(endExclusive: Int) {
+            guard let start = runStart else { return }
+            runStart = nil
+            let runLength = endExclusive - start
+            guard runLength >= 2 else { return }
+            let phrase = words[start..<endExclusive]
+                .map { $0.trimmingCharacters(in: CharacterSet.punctuationCharacters) }
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespaces)
+            let truncated = phrase.count > 60 ? String(phrase.prefix(60)) : phrase
+            guard !truncated.isEmpty, seen.insert(truncated).inserted else { return }
+            results.append(truncated)
+        }
+        for (i, word) in words.enumerated() {
+            let stripped = word.trimmingCharacters(in: CharacterSet.punctuationCharacters)
+            guard !stripped.isEmpty, let first = stripped.unicodeScalars.first else {
+                flushRun(endExclusive: i); continue
+            }
+            if CharacterSet.uppercaseLetters.contains(first) {
+                if runStart == nil { runStart = i }
+            } else {
+                flushRun(endExclusive: i)
+            }
+        }
+        flushRun(endExclusive: words.count)
+
+        // Pass 2: ALLCAPS tokens of 2+ letters as standalone queries (if not already captured)
+        for word in words {
+            guard results.count + seen.filter({ _ in true }).count < cap * 2 else { break }
+            let stripped = word.trimmingCharacters(in: CharacterSet.punctuationCharacters)
+            guard stripped.count >= 2 else { continue }
+            let upper = stripped.uppercased()
+            guard stripped == upper, stripped.unicodeScalars.allSatisfy({ CharacterSet.letters.contains($0) }) else { continue }
+            if seen.insert(stripped).inserted { results.append(stripped) }
+        }
+
+        return Array(results.prefix(cap))
     }
 
     private func buildPrompt(

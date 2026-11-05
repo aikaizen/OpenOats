@@ -506,7 +506,10 @@ final class LiveSessionController {
     func loadKBCacheIfAvailable(settings: AppSettings) {
         guard let kb = coordinator.knowledgeBase else { return }
         Task {
-            _ = await kb.loadCachedStateIfAvailable(folderURLs: settings.kbFolderURLs)
+            let loaded = await kb.loadCachedStateIfAvailable(folderURLs: settings.kbFolderURLs)
+            if !loaded && !settings.kbFolderPaths.isEmpty {
+                await kb.index(folderURLs: settings.kbFolderURLs)
+            }
         }
     }
 

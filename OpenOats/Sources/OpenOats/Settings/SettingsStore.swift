@@ -659,6 +659,29 @@ final class SettingsStore {
         }
     }
 
+    @ObservationIgnored nonisolated(unsafe) private var _sidecastContextSeconds: Double
+    var sidecastContextSeconds: Double {
+        get { access(keyPath: \.sidecastContextSeconds); return _sidecastContextSeconds }
+        set {
+            withMutation(keyPath: \.sidecastContextSeconds) {
+                _sidecastContextSeconds = newValue
+                defaults.set(newValue, forKey: "sidecastContextSeconds")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _sidecastContextMaxUtterances: Int
+    var sidecastContextMaxUtterances: Int {
+        get { access(keyPath: \.sidecastContextMaxUtterances); return _sidecastContextMaxUtterances }
+        set {
+            withMutation(keyPath: \.sidecastContextMaxUtterances) {
+                _sidecastContextMaxUtterances = newValue
+                defaults.set(newValue, forKey: "sidecastContextMaxUtterances")
+            }
+        }
+    }
+
+
 
     @ObservationIgnored nonisolated(unsafe) private var _preFetchIntervalSeconds: Double
     var preFetchIntervalSeconds: Double {
@@ -1571,6 +1594,10 @@ final class SettingsStore {
             ? defaults.double(forKey: "sidecastBubbleLifetimeSeconds") : 0.0
         self._sidecastHistoryPerPersona = defaults.object(forKey: "sidecastHistoryPerPersona") != nil
             ? defaults.integer(forKey: "sidecastHistoryPerPersona") : 3
+        self._sidecastContextSeconds = defaults.object(forKey: "sidecastContextSeconds") != nil
+            ? defaults.double(forKey: "sidecastContextSeconds") : 300.0
+        self._sidecastContextMaxUtterances = defaults.object(forKey: "sidecastContextMaxUtterances") != nil
+            ? defaults.integer(forKey: "sidecastContextMaxUtterances") : 80
         self._preFetchIntervalSeconds = defaults.object(forKey: "preFetchIntervalSeconds") != nil
             ? defaults.double(forKey: "preFetchIntervalSeconds") : 4.0
         self._kbSimilarityThreshold = defaults.object(forKey: "kbSimilarityThreshold") != nil

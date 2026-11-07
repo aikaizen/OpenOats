@@ -108,7 +108,7 @@ struct SidecastPersona: Identifiable, Codable, Sendable, Equatable {
     ]
 }
 
-struct SidecastMessage: Identifiable, Sendable, Equatable {
+struct SidecastMessage: Identifiable, Codable, Sendable, Equatable {
     let id: UUID
     let personaID: UUID
     let personaName: String

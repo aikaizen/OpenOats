@@ -22,7 +22,8 @@ Knowledge base (`App/LiveSessionController.swift`)
   folders are configured, the app re-indexes instead of silently running with
   no knowledge base.
 
-Display (`Views/SidecastPanelContent.swift`, `Views/SidecastSettingsTab.swift`)
+Display (`Views/SidecastPanelContent.swift`, `Views/SidecastSettingsTab.swift`,
+`Views/SidecastHistoryView.swift`)
 
 - New `PersonaVerbosity.long` (480 characters). Existing: terse 80, short 140,
   medium 220.
@@ -40,6 +41,67 @@ Display (`Views/SidecastPanelContent.swift`, `Views/SidecastSettingsTab.swift`)
   the existing one. The engine retains up to max(50, sidecastHistoryPerPersona)
   messages per persona for the pop-open view (the card still shows only
   sidecastHistoryPerPersona).
+- The panel header gains three **recap buttons** (`5 min`, `10 min`, `Since start`)
+  and a **History** (`clock.arrow.circlepath`) button, right-aligned. Recap
+  buttons are disabled while a recap is in flight (spinner shown) or when no
+  session is active. A red inline error clears after 8 s.
+- Pressing a recap button calls `SidecastEngine.requestRecap(_:)`, which generates
+  a structured recap via the LLM and opens the result in a dedicated
+  **NSWindow** titled `"<windowLabel> — Recap HH:mm"`. The recap is full-text
+  selectable with a Copy button.
+- The History button opens `SidecastHistoryView` (`Views/SidecastHistoryView.swift`)
+  in a single **NSWindow** (min 520×420; reopening focuses). It shows all advisor
+  messages and recaps for the session, live-updating from `engine.history`.
+  Features: search field (case-insensitive substring over title + text), filter
+  chips (All / one per active persona / Recaps), sort toggle (newest-first default
+  / chronological), Export Markdown button (writes `<session>/sidecast.md` and
+  opens the folder in Finder). Each row shows HH:mm:ss, a tinted title badge, the
+  full selectable text, and a per-row Copy button.
+
+## Recaps and history
+
+`SidecastEngine` keeps a whole-session `history: [SidecastHistoryEntry]`
+(observable, no cap). Every accepted advisor message and every completed recap is
+appended here and simultaneously written to disk.
+
+**Persistence** (`Storage/SidecastHistoryStore.swift`): each entry is appended as
+one JSON line to `<sessionsDirectory>/<sessionID>/sidecast.jsonl` (mode 0600).
+On session start the engine loads any existing entries from that file, so
+relaunching mid-session keeps the full log intact. Bad lines are silently skipped.
+
+**Recap prompt** (`Intelligence/RecapPrompt.swift`): builds system + user strings
+for a time-windowed recap. Transcript is filtered to the window, capped at 24,000
+characters (newest kept, `truncated` flag set). The same `client` and model that
+Sidecast uses for live messages handles the recap LLM call; only one recap runs at
+a time (a second request while one is in flight is ignored).
+
+**Context window settings** (new UserDefaults keys):
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sidecastContextSeconds` | Double | 300 | Seconds of transcript sent as wider context in the Sidecast prompt |
+| `sidecastContextMaxUtterances` | Int | 80 | Hard cap on utterances in that wider context |
+
+Both are exposed in the Sidecast settings tab under "Context Window". The picker
+for `sidecastContextSeconds` offers 1 min / 3 min / 5 min / 10 min / 20 min.
+Previously the prompt used the last 10 utterances as "Wider context"; it now uses
+utterances whose timestamp falls within `sidecastContextSeconds` of the latest
+utterance, capped at `sidecastContextMaxUtterances`, formatted
+`HH:mm Speaker: text` one per line under a heading
+`Transcript, last N min (M utterances)`. Total wider-context text is additionally
+capped at 16,000 characters (oldest lines dropped). The recent-exchange block
+(6 utterances) is unchanged.
+
+**SessionID wiring**: `LiveSessionController` sets `engine.sessionID` immediately
+after `_currentSessionID = handle.sessionID`. The engine's `sessionID` `didSet`
+tells the history store the new session ID and loads any existing log. `clear()`
+(called on session start) resets `history`, `isRecapping`, `lastRecapError`, and
+`sessionStartDate`, and closes the store's file handle.
+
+**Export**: `SidecastHistoryStore.exportMarkdown(sessionID:)` writes
+`<session>/sidecast.md` — `# Sidecast history — <sessionID>` then one
+`### HH:mm · <title>` block per entry, chronological. The History window's
+"Export Markdown" button calls this and reveals the file in Finder.
 
 ## Setting it up without the UI
 

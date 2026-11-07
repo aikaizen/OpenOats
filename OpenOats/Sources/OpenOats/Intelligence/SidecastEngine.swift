@@ -25,6 +25,30 @@ final class SidecastEngine {
         set { withMutation(keyPath: \.isGenerating) { _isGenerating = newValue } }
     }
 
+    // MARK: - Session history (whole session, no cap)
+    @ObservationIgnored nonisolated(unsafe) private var _history: [SidecastHistoryEntry] = []
+    private(set) var history: [SidecastHistoryEntry] {
+        get { access(keyPath: \.history); return _history }
+        set { withMutation(keyPath: \.history) { _history = newValue } }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _isRecapping = false
+    private(set) var isRecapping: Bool {
+        get { access(keyPath: \.isRecapping); return _isRecapping }
+        set { withMutation(keyPath: \.isRecapping) { _isRecapping = newValue } }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _lastRecapError: String? = nil
+    private(set) var lastRecapError: String? {
+        get { access(keyPath: \.lastRecapError); return _lastRecapError }
+        set { withMutation(keyPath: \.lastRecapError) { _lastRecapError = newValue } }
+    }
+
+    // sessionID: set by LiveSessionController when a session starts
+    var sessionID: String? {
+        didSet { onSessionIDChanged(oldValue: oldValue) }
+    }
+
     var suggestions: [Suggestion] {
         messagesByPersona.values
             .flatMap { $0 }
@@ -36,20 +60,29 @@ final class SidecastEngine {
     private let transcriptStore: TranscriptStore
     private let knowledgeBase: KnowledgeBase
     private let settings: AppSettings
+    let historyStore: SidecastHistoryStore
 
     private var generationTask: Task<Void, Never>?
+    private var recapTask: Task<Void, Never>?
     private var activeGenerationID: UUID?
     private var lastProcessedUtteranceID: UUID?
     private var lastGenerationStartedAt: Date = .distantPast
     private var recentBubbleTexts: [String] = []
     private var lastSpokenAtByPersona: [UUID: Date] = [:]
+    private var sessionStartDate: Date?
 
     private static let liveGenerationTimeout: TimeInterval = 45
 
-    init(transcriptStore: TranscriptStore, knowledgeBase: KnowledgeBase, settings: AppSettings) {
+    init(
+        transcriptStore: TranscriptStore,
+        knowledgeBase: KnowledgeBase,
+        settings: AppSettings,
+        sessionsDirectoryURL: URL? = nil
+    ) {
         self.transcriptStore = transcriptStore
         self.knowledgeBase = knowledgeBase
         self.settings = settings
+        self.historyStore = SidecastHistoryStore(sessionsDirectoryURL: sessionsDirectoryURL)
     }
 
     func onUtterance(_ utterance: Utterance) {
@@ -73,7 +106,7 @@ final class SidecastEngine {
         isGenerating = true
 
         let recentExchange = transcriptStore.recentExchange
-        let recentUtterances = transcriptStore.recentUtterances
+        let allUtterances = transcriptStore.utterances
         let conversationState = transcriptStore.conversationState
         let recentTexts = recentBubbleTexts
         let lastSpoken = lastSpokenAtByPersona
@@ -89,7 +122,7 @@ final class SidecastEngine {
             let prompt = self.buildPrompt(
                 utterance: utterance,
                 recentExchange: recentExchange,
-                recentUtterances: recentUtterances,
+                allUtterances: allUtterances,
                 state: conversationState,
                 personas: personas,
                 evidence: evidence
@@ -151,14 +184,110 @@ final class SidecastEngine {
     func clear() {
         generationTask?.cancel()
         generationTask = nil
+        recapTask?.cancel()
+        recapTask = nil
         messagesByPersona.removeAll()
         fullHistoryByPersona.removeAll()
+        history.removeAll()
         isGenerating = false
+        isRecapping = false
+        lastRecapError = nil
         activeGenerationID = nil
         lastProcessedUtteranceID = nil
         lastGenerationStartedAt = .distantPast
         recentBubbleTexts.removeAll()
         lastSpokenAtByPersona.removeAll()
+        sessionStartDate = nil
+        historyStore.clearSession()
+    }
+
+    /// Called when `sessionID` property is set.
+    private func onSessionIDChanged(oldValue: String?) {
+        guard let newID = sessionID else { return }
+        // Only switch when actually different
+        guard newID != oldValue else { return }
+        sessionStartDate = Date.now
+        // Tell the store about the new session.
+        // sessionsDirectoryURL is injected at init time; if present the store already
+        // knows the base URL; we just update the session ID.
+        historyStore.setCurrentSessionID(newID)
+        // Load existing entries (tolerant of bad lines; relaunch mid-session keeps log)
+        let loaded = historyStore.load(sessionID: newID)
+        if !loaded.isEmpty {
+            history = loaded
+        }
+    }
+
+    // MARK: - Recap
+
+    func requestRecap(_ window: RecapWindow) async {
+        guard !isRecapping else { return }
+        guard sessionID != nil else { return }
+        isRecapping = true
+        lastRecapError = nil
+
+        let allUtterances = transcriptStore.utterances
+        let sessionStart = sessionStartDate
+        let now = Date.now
+
+        let (system, user, meta) = RecapPrompt.build(
+            window: window,
+            utterances: allUtterances,
+            sessionStart: sessionStart,
+            now: now
+        )
+
+        let messages: [OpenRouterClient.Message] = [
+            .init(role: "system", content: system),
+            .init(role: "user", content: user),
+        ]
+
+        recapTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let text = try await self.client.complete(
+                    apiKey: self.llmApiKey,
+                    model: self.settings.activeRealtimeModel,
+                    messages: messages,
+                    maxTokens: 800,
+                    temperature: 0.3,
+                    baseURL: self.llmBaseURL,
+                    webSearch: false,
+                    transport: self.settings.activeLLMTransport,
+                    requestTimeout: 60
+                )
+                let entry = RecapEntry(
+                    id: UUID(),
+                    createdAt: now,
+                    windowLabel: window.label,
+                    coversFrom: meta.coversFrom,
+                    coversTo: meta.coversTo,
+                    utteranceCount: meta.count,
+                    truncated: meta.truncated,
+                    text: text.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+                await MainActor.run {
+                    let historyEntry = SidecastHistoryEntry.recap(entry)
+                    self.history.append(historyEntry)
+                    self.historyStore.append(historyEntry)
+                    self.isRecapping = false
+                    // Open the recap window
+                    SidecastWindowManager.shared.openRecap(entry)
+                }
+            } catch is CancellationError {
+                await MainActor.run { self.isRecapping = false }
+            } catch {
+                await MainActor.run {
+                    self.isRecapping = false
+                    self.lastRecapError = error.localizedDescription
+                    // Clear error after 8 s
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(8))
+                        self?.lastRecapError = nil
+                    }
+                }
+            }
+        }
     }
 
     private func finishGeneration(_ generationID: UUID) {
@@ -257,6 +386,13 @@ final class SidecastEngine {
 
         messagesByPersona = updated
         fullHistoryByPersona = updatedFull
+
+        // Append to whole-session history (chronological, no cap)
+        for message in accepted {
+            let entry = SidecastHistoryEntry.message(message)
+            history.append(entry)
+            historyStore.append(entry)
+        }
     }
 
     private static let sanitizePatterns: [(NSRegularExpression, String)] = {
@@ -389,10 +525,16 @@ final class SidecastEngine {
         return Array(results.prefix(cap))
     }
 
+    private static let contextTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
     private func buildPrompt(
         utterance: Utterance,
         recentExchange: [Utterance],
-        recentUtterances: [Utterance],
+        allUtterances: [Utterance],
         state: ConversationState,
         personas: [SidecastPersona],
         evidence: [KBContextPack]
@@ -413,9 +555,27 @@ final class SidecastEngine {
             .map { "\($0.speaker.displayLabel): \($0.text)" }
             .joined(separator: "\n")
 
-        let widerContext = recentUtterances
-            .map { "\($0.speaker.displayLabel): \($0.text)" }
-            .joined(separator: "\n")
+        // Wider context: utterances within sidecastContextSeconds of the latest,
+        // capped at sidecastContextMaxUtterances (most recent), formatted HH:mm Speaker: text.
+        let contextWindowSeconds = settings.sidecastContextSeconds
+        let contextMaxUtterances = settings.sidecastContextMaxUtterances
+        let latestTimestamp = allUtterances.last?.timestamp ?? utterance.timestamp
+        let contextCutoff = latestTimestamp.addingTimeInterval(-contextWindowSeconds)
+        let windowUtterances = allUtterances
+            .filter { $0.timestamp >= contextCutoff }
+            .suffix(contextMaxUtterances)
+        let minuteLabel = Int(contextWindowSeconds / 60)
+        var widerContextLines = windowUtterances.map { u in
+            "\(Self.contextTimeFormatter.string(from: u.timestamp)) \(u.speaker.displayLabel): \(u.text)"
+        }
+        // Cap total chars at 16,000 (drop oldest)
+        let charCap = 16_000
+        var widerContextText = widerContextLines.joined(separator: "\n")
+        while widerContextText.count > charCap && !widerContextLines.isEmpty {
+            widerContextLines.removeFirst()
+            widerContextText = widerContextLines.joined(separator: "\n")
+        }
+        let widerContextHeader = "Transcript, last \(minuteLabel) min (\(windowUtterances.count) utterances)"
 
         let evidenceText: String
         if evidence.isEmpty {
@@ -475,8 +635,8 @@ final class SidecastEngine {
         Recent exchange:
         \(transcriptText)
 
-        Wider context:
-        \(widerContext)
+        \(widerContextHeader):
+        \(widerContextText)
 
         Conversation summary:
         \(stateSummary)

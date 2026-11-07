@@ -9,7 +9,7 @@ struct SidecastPanelContent: View {
     var body: some View {
         VStack(spacing: 0) {
             // Header
-            SidecastHeader(isGenerating: engine?.isGenerating ?? false)
+            SidecastHeader(engine: engine, isGenerating: engine?.isGenerating ?? false)
 
             Divider().opacity(0.3)
 
@@ -73,6 +73,7 @@ private struct PersonaCardList: View {
 // MARK: - Header
 
 private struct SidecastHeader: View {
+    let engine: SidecastEngine?
     let isGenerating: Bool
 
     var body: some View {
@@ -95,10 +96,63 @@ private struct SidecastHeader: View {
                 )
 
             Spacer()
+
+            // Recap buttons (disabled when no session or already recapping)
+            let hasSession = engine?.sessionID != nil
+            let isRecapping = engine?.isRecapping ?? false
+
+            if isRecapping {
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .frame(width: 16, height: 16)
+                    .help("Generating recap…")
+            }
+
+            ForEach([RecapWindow.minutes(5), RecapWindow.minutes(10), RecapWindow.sinceStart], id: \.label) { window in
+                Button(window.shortLabel) {
+                    guard let eng = engine else { return }
+                    Task { await eng.requestRecap(window) }
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .disabled(!hasSession || isRecapping)
+                .help(window.label)
+                .buttonStyle(.plain)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.white.opacity(hasSession && !isRecapping ? 0.12 : 0.05))
+                )
+                .foregroundStyle(.white.opacity(hasSession && !isRecapping ? 0.85 : 0.35))
+            }
+
+            // History button
+            Button {
+                if let eng = engine {
+                    SidecastWindowManager.shared.openHistory(engine: eng)
+                }
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(hasSession ? 0.85 : 0.35))
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasSession)
+            .help("Sidecast history")
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
         .padding(.bottom, 6)
+
+        // Inline recap error
+        if let errMsg = engine?.lastRecapError {
+            Text(errMsg)
+                .font(.system(size: 10))
+                .foregroundStyle(Color.red.opacity(0.85))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 2)
+        }
 
         Text("Live on-screen commentary from AI personas")
             .font(.system(size: 11))

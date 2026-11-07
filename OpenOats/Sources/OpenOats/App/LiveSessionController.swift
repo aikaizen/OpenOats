@@ -713,6 +713,7 @@ final class LiveSessionController {
             reusedAbandonedRow = false
         }
         _currentSessionID = handle.sessionID
+        coordinator.sidecastEngine?.sessionID = handle.sessionID
         DiagnosticsSupport.record(
             category: "meeting",
             message: "\(reusedAbandonedRow ? "Reused" : "Started") session \(handle.sessionID) model=\(settings?.transcriptionModel.rawValue ?? "unknown")"

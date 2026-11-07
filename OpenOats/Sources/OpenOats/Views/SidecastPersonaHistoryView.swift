@@ -234,6 +234,12 @@ final class SidecastWindowManager {
 
     private var windows: [UUID: NSWindow] = [:]
 
+    // Singleton window for the history list (one per session)
+    private var historyWindow: NSWindow?
+
+    // Recap windows keyed by recap entry ID
+    private var recapWindows: [UUID: NSWindow] = [:]
+
     func openWindow(for persona: SidecastPersona, engine: SidecastEngine) {
         if let existing = windows[persona.id] {
             existing.makeKeyAndOrderFront(nil)
@@ -271,6 +277,76 @@ final class SidecastWindowManager {
         }
 
         windows[persona.id] = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: false)
+    }
+
+    func openRecap(_ entry: RecapEntry) {
+        if let existing = recapWindows[entry.id] {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: false)
+            return
+        }
+
+        let view = SidecastRecapView(entry: entry)
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+
+        let tf = DateFormatter()
+        tf.dateFormat = "HH:mm"
+        window.title = "\(entry.windowLabel) — Recap \(tf.string(from: entry.createdAt))"
+        window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+        window.setContentSize(NSSize(width: 520, height: 400))
+        window.minSize = NSSize(width: 420, height: 300)
+        window.backgroundColor = NSColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1)
+        window.isReleasedWhenClosed = false
+        window.center()
+
+        let entryID = entry.id
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.recapWindows.removeValue(forKey: entryID)
+            }
+        }
+
+        recapWindows[entry.id] = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: false)
+    }
+
+    func openHistory(engine: SidecastEngine) {
+        if let existing = historyWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: false)
+            return
+        }
+
+        let view = SidecastHistoryView(engine: engine)
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Sidecast History"
+        window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+        window.setContentSize(NSSize(width: 620, height: 520))
+        window.minSize = NSSize(width: 520, height: 420)
+        window.backgroundColor = NSColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1)
+        window.isReleasedWhenClosed = false
+        window.center()
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.historyWindow = nil
+            }
+        }
+
+        historyWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: false)
     }

@@ -152,7 +152,8 @@ final class AppContainer {
         let sidecastEngine = SidecastEngine(
             transcriptStore: coordinator.transcriptStore,
             knowledgeBase: knowledgeBase,
-            settings: settings
+            settings: settings,
+            sessionsDirectoryURL: coordinator.sessionRepository.sessionsDirectoryURL
         )
 
         return AppViewServices(

@@ -154,6 +154,36 @@ struct SidecastSettingsTab: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Context Window") {
+                    Picker("Transcript window", selection: $settings.sidecastContextSeconds) {
+                        Text("1 min").tag(60.0)
+                        Text("3 min").tag(180.0)
+                        Text("5 min").tag(300.0)
+                        Text("10 min").tag(600.0)
+                        Text("20 min").tag(1200.0)
+                    }
+                    .font(.system(size: 12))
+
+                    Text("How far back the transcript context goes when building the Sidecast prompt.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Text("Max Utterances")
+                            .font(.system(size: 12))
+                        Spacer()
+                        TextField("", value: $settings.sidecastContextMaxUtterances, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                            .font(.system(size: 12))
+                    }
+
+                    Text("Hard cap on utterances sent as context (default 80).")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+
                 Section("System Prompt") {
                     Text("Custom system prompt for sidecast generation. Leave empty to use the built-in default.")
                         .font(.system(size: 11))

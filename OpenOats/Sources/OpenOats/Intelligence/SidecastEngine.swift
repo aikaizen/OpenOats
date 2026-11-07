@@ -575,7 +575,7 @@ final class SidecastEngine {
             widerContextLines.removeFirst()
             widerContextText = widerContextLines.joined(separator: "\n")
         }
-        let widerContextHeader = "Transcript, last \(minuteLabel) min (\(windowUtterances.count) utterances)"
+        let widerContextHeader = "Transcript, last \(minuteLabel) min (\(widerContextLines.count) utterances)"
 
         let evidenceText: String
         if evidence.isEmpty {

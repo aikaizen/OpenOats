@@ -20,4 +20,13 @@ enum TextSimilarity {
         let union = setA.union(setB).count
         return Double(intersection) / Double(union)
     }
+
+    static func overlapCoefficient(_ a: String, _ b: String) -> Double {
+        let setA = Set(normalizedWords(in: a))
+        let setB = Set(normalizedWords(in: b))
+        let minCount = min(setA.count, setB.count)
+        guard minCount > 0 else { return 0.0 }
+        let intersection = setA.intersection(setB).count
+        return Double(intersection) / Double(minCount)
+    }
 }

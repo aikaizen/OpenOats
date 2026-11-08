@@ -70,6 +70,7 @@ final class TranscriptStore {
 
         if utterance.speaker.isRemote {
             remoteUtterancesSinceStateUpdate += 1
+            dropEchoedYouUtterances(against: utterance)
         }
         utterancesSinceStateUpdate += 1
         return true
@@ -230,7 +231,7 @@ final class TranscriptStore {
                 remoteText: candidate.text,
                 micTimestamp: utterance.timestamp,
                 remoteTimestamp: candidate.timestamp,
-                direction: .micAfterRemote
+                direction: .either
             ) else { continue }
 
             return MicEchoMatch(
@@ -240,5 +241,31 @@ final class TranscriptStore {
         }
 
         return nil
+    }
+
+    /// When a remote final utterance arrives, retroactively remove any You utterances
+    /// within the echo window that are echoes of it. Operates on the in-memory store only;
+    /// the live transcript file (SessionRepository) is not modified here.
+    private func dropEchoedYouUtterances(against remoteUtterance: Utterance) {
+        let window = AcousticEchoFilter.defaultWindow
+        let cutoff = remoteUtterance.timestamp.addingTimeInterval(-window)
+        utterances.removeAll { you in
+            guard you.speaker == .you, you.timestamp >= cutoff else { return false }
+            guard let match = AcousticEchoFilter.match(
+                micText: you.text,
+                remoteText: remoteUtterance.text,
+                micTimestamp: you.timestamp,
+                remoteTimestamp: remoteUtterance.timestamp,
+                direction: .either
+            ) else { return false }
+            let dtFormatted = String(format: "%.2f", match.timeDelta)
+            let simFormatted = String(format: "%.2f", match.similarity)
+            let youSnippet = String(you.text.prefix(80))
+            let themSnippet = String(remoteUtterance.text.prefix(80))
+            Log.transcript.info(
+                "Dropped mic utterance as retroactive system-audio echo dt=\(dtFormatted, privacy: .public) similarity=\(simFormatted, privacy: .public) you='\(youSnippet, privacy: .private)' them='\(themSnippet, privacy: .private)'"
+            )
+            return true
+        }
     }
 }

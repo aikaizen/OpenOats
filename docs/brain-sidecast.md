@@ -103,6 +103,25 @@ tells the history store the new session ID and loads any existing log. `clear()`
 `### HH:mm · <title>` block per entry, chronological. The History window's
 "Export Markdown" button calls this and reveals the file in Finder.
 
+## Echo suppression
+
+`Transcription/AcousticEchoFilter` catches mic utterances that are re-heard
+copies of remote speech.
+
+| Parameter | Value | Why |
+| --- | --- | --- |
+| Time window | ±8 s (either order) | Echo delays measured 1–8 s; remote audio can also arrive slightly after the mic re-hears it |
+| Similarity metric | `max(Jaccard, overlapCoefficient)` | Overlap coefficient (`\|A∩B\| / min(\|A\|,\|B\|)`) handles fragments where one side is a subset; Jaccard penalises those cases |
+| Threshold | 0.8 | Calibrated on two real sessions: caught 127/150 and 84 echoes; sampled drops were true echoes |
+| Minimum length | ≥ 4 words **or** ≥ 20 chars | Avoids false positives on very short utterances |
+
+**Live retroactive drop**: when a remote final utterance is committed to
+`TranscriptStore`, any You utterances from the preceding 8 s that match it are
+removed from the in-memory store. This catches the case where the mic re-heard
+the remote side *before* the remote transcription finished. The live transcript
+file (`transcript.live.jsonl`) is not rewritten; the batch re-transcription pass
+and the downstream motes pipeline perform an independent dedup pass.
+
 ## Setting it up without the UI
 
 All settings live in the `com.openoats.app` defaults domain. Quit OpenOats

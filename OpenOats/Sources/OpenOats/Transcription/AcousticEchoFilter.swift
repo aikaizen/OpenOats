@@ -2,8 +2,17 @@ import Foundation
 import os
 
 /// Shared acoustic echo suppression logic.
-/// Detects when mic (YOU) utterances are echoes of system (THEM) audio based on
-/// Jaccard word-set similarity and substring containment.
+/// Detects when mic (YOU) utterances are echoes of system (THEM) audio.
+///
+/// Similarity is `max(jaccard, overlapCoefficient)` on normalised word sets.
+/// The overlap coefficient (`|A∩B| / min(|A|,|B|)`) tolerates fragments where
+/// one side is a subset of the other, which Jaccard penalises. Either side
+/// may arrive first (`.either` direction, ±8 s window). Threshold 0.8.
+/// Substring containment is an additional fast path.
+///
+/// Both the batch pass (`BatchAudioTranscriber`) and the live pass
+/// (`TranscriptStore`) use this filter. The live pass also retro-drops You
+/// utterances when a matching remote final arrives later.
 enum AcousticEchoFilter {
     struct Match: Equatable {
         let timeDelta: TimeInterval
@@ -15,8 +24,8 @@ enum AcousticEchoFilter {
         case either
     }
 
-    static let defaultWindow: TimeInterval = 1.75
-    static let defaultSimilarityThreshold = 0.78
+    static let defaultWindow: TimeInterval = 8.0
+    static let defaultSimilarityThreshold = 0.8
     static let defaultMinimumWordCount = 4
     static let defaultMinimumCharacterCount = 20
 
@@ -41,7 +50,7 @@ enum AcousticEchoFilter {
                     similarityThreshold: similarityThreshold,
                     minimumWordCount: minimumWordCount,
                     minimumCharacterCount: minimumCharacterCount,
-                    direction: .micAfterRemote
+                    direction: .either
                 ) else { continue }
 
                 let dtFormatted = String(format: "%.2f", match.timeDelta)
@@ -101,7 +110,8 @@ enum AcousticEchoFilter {
             return nil
         }
 
-        let similarity = TextSimilarity.jaccard(first, second)
+        let similarity = max(TextSimilarity.jaccard(first, second),
+                             TextSimilarity.overlapCoefficient(first, second))
         let containsOther = first.contains(second) || second.contains(first)
         return similarity >= similarityThreshold || containsOther ? similarity : nil
     }

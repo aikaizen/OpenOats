@@ -41,6 +41,21 @@ final class OverlayPanel: NSPanel {
 @MainActor
 final class OverlayManager: ObservableObject {
     private var panel: OverlayPanel?
+    // MARK: - Sidecast collapse state
+    /// Shared observable state for the sidecast collapse/expand feature.
+    @Observable
+    @MainActor
+    final class SidecastCollapseState {
+        var isCollapsed: Bool = false
+        /// Total persona-message count at the moment of collapse (for "N new" badge).
+        var motesAtCollapse: Int = 0
+        /// Saved expanded frame so we can animate back exactly.
+        var expandedFrame: NSRect = .zero
+    }
+
+    let sidecastCollapseState = SidecastCollapseState()
+    private static let collapsedBarHeight: CGFloat = 40
+
     private var sidecastPanel: OverlayPanel?
     private var hostingView: NSHostingView<AnyView>?
     private var sidecastHostingView: NSHostingView<AnyView>?
@@ -90,6 +105,9 @@ final class OverlayManager: ObservableObject {
     }
 
     /// Show the full-height sidecast sidebar docked to the right edge.
+    /// On first creation, restores a previously-saved expanded frame. If the
+    /// sidebar was collapsed before quit it restores collapsed state immediately
+    /// (no animation — the panel is not visible yet) so the user sees the bar.
     func showSidecastSidebar<Content: View>(content: Content) {
         let erased = AnyView(content)
 
@@ -97,14 +115,14 @@ final class OverlayManager: ObservableObject {
             let screen = NSScreen.main ?? NSScreen.screens.first
             let screenFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 
-            // Full height, docked to right edge
-            let rect = NSRect(
+            // Full height, docked to right edge (initial default)
+            let defaultRect = NSRect(
                 x: screenFrame.maxX - Self.sidecastDefaultWidth,
                 y: screenFrame.minY,
                 width: Self.sidecastDefaultWidth,
                 height: screenFrame.height
             )
-            let newPanel = OverlayPanel(contentRect: rect, defaults: defaults)
+            let newPanel = OverlayPanel(contentRect: defaultRect, defaults: defaults)
             newPanel.minSize = NSSize(width: Self.sidecastMinWidth, height: 300)
             newPanel.maxSize = NSSize(width: Self.sidecastMaxWidth, height: screenFrame.height)
             newPanel.setFrameAutosaveName("SidecastSidebar")
@@ -120,6 +138,133 @@ final class OverlayManager: ObservableObject {
         }
         sidecastPanel?.orderFront(nil)
     }
+
+    // MARK: - Sidecast collapse / expand
+
+    /// Collapse the sidecast sidebar to a 40-pt bar (animated).
+    /// `collapsedContent` replaces the panel's SwiftUI content while collapsed.
+    /// `currentMotesCount` is snapshotted for the "N new" badge.
+    func collapseSidecast<Bar: View>(collapsedContent: Bar, currentMotesCount: Int) {
+        guard let panel = sidecastPanel, !sidecastCollapseState.isCollapsed else { return }
+
+        let expandedFrame = panel.frame
+        sidecastCollapseState.expandedFrame = expandedFrame
+        sidecastCollapseState.motesAtCollapse = currentMotesCount
+
+        // Persist
+        defaults.set(true, forKey: "sidecastCollapsed")
+        defaults.set(NSStringFromRect(expandedFrame), forKey: "sidecastExpandedFrame")
+
+        // Temporarily disable autosave so the collapsed frame is never written as the expanded one.
+        panel.setFrameAutosaveName("")
+
+        let collapsedRect = NSRect(
+            x: expandedFrame.minX,
+            y: expandedFrame.maxY - Self.collapsedBarHeight,
+            width: expandedFrame.width,
+            height: Self.collapsedBarHeight
+        )
+        // Lower minSize so the panel can resize to 40 pt tall
+        panel.minSize = NSSize(width: Self.sidecastMinWidth, height: Self.collapsedBarHeight)
+        // Make the bar non-resizable vertically while collapsed
+        panel.maxSize = NSSize(width: Self.sidecastMaxWidth, height: Self.collapsedBarHeight)
+
+        // Swap content first so SwiftUI doesn't fight the resize
+        sidecastHostingView?.rootView = AnyView(collapsedContent)
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.22
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(collapsedRect, display: true)
+        }
+
+        sidecastCollapseState.isCollapsed = true
+    }
+
+    /// Expand the sidecast sidebar back to its saved frame (animated).
+    /// `expandedContent` replaces the bar's SwiftUI content after expansion.
+    func expandSidecast<Content: View>(expandedContent: Content) {
+        guard let panel = sidecastPanel, sidecastCollapseState.isCollapsed else { return }
+
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        let screenFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+        // Restore the expanded frame (saved before collapse; fall back to defaults if missing).
+        let savedFrameString = defaults.string(forKey: "sidecastExpandedFrame") ?? ""
+        let restoredFrame: NSRect
+        if !savedFrameString.isEmpty {
+            let parsed = NSRectFromString(savedFrameString)
+            restoredFrame = parsed == .zero ? sidecastCollapseState.expandedFrame : parsed
+        } else {
+            restoredFrame = sidecastCollapseState.expandedFrame
+        }
+        let targetFrame = restoredFrame == .zero
+            ? NSRect(
+                x: screenFrame.maxX - Self.sidecastDefaultWidth,
+                y: screenFrame.minY,
+                width: Self.sidecastDefaultWidth,
+                height: screenFrame.height)
+            : restoredFrame
+
+        // Restore min/max before animating so AppKit allows the resize
+        panel.minSize = NSSize(width: Self.sidecastMinWidth, height: 300)
+        panel.maxSize = NSSize(width: Self.sidecastMaxWidth, height: screenFrame.height)
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.22
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(targetFrame, display: true)
+        }, completionHandler: { [weak panel] in
+            // Re-enable autosave only after the expanded frame is in place.
+            // completionHandler runs on the main thread; annotate explicitly to
+            // satisfy the main-actor isolation check.
+            Task { @MainActor in
+                panel?.setFrameAutosaveName("SidecastSidebar")
+            }
+        })
+
+        // Swap content back immediately (the grow animation reveals it naturally)
+        sidecastHostingView?.rootView = AnyView(expandedContent)
+
+        sidecastCollapseState.isCollapsed = false
+        sidecastCollapseState.motesAtCollapse = 0
+
+        // Persist
+        defaults.set(false, forKey: "sidecastCollapsed")
+        defaults.removeObject(forKey: "sidecastExpandedFrame")
+    }
+
+    /// Called once by the content layer on first show; restores persisted collapsed state.
+    /// Returns `true` if the panel should start in collapsed mode.
+    func restoreCollapsedStateIfNeeded() -> Bool {
+        guard defaults.bool(forKey: "sidecastCollapsed") else { return false }
+        let savedFrameString = defaults.string(forKey: "sidecastExpandedFrame") ?? ""
+        if !savedFrameString.isEmpty {
+            let parsed = NSRectFromString(savedFrameString)
+            if parsed != .zero {
+                sidecastCollapseState.expandedFrame = parsed
+            }
+        }
+        sidecastCollapseState.isCollapsed = true
+        // If the panel already exists, snap it to bar height immediately (no animation)
+        if let panel = sidecastPanel {
+            let ef = sidecastCollapseState.expandedFrame
+            if ef != .zero {
+                let barRect = NSRect(
+                    x: ef.minX,
+                    y: ef.maxY - Self.collapsedBarHeight,
+                    width: ef.width,
+                    height: Self.collapsedBarHeight
+                )
+                panel.setFrameAutosaveName("")
+                panel.minSize = NSSize(width: Self.sidecastMinWidth, height: Self.collapsedBarHeight)
+                panel.maxSize = NSSize(width: Self.sidecastMaxWidth, height: Self.collapsedBarHeight)
+                panel.setFrame(barRect, display: false)
+            }
+        }
+        return true
+    }
+
 
     func hide() {
         panel?.orderOut(nil)
@@ -147,6 +292,19 @@ final class OverlayManager: ObservableObject {
             showSidecastSidebar(content: content)
         }
     }
+    var sidecastIsVisible: Bool { sidecastPanel?.isVisible == true }
+
+    func hideSidecast() {
+        sidecastPanel?.orderOut(nil)
+        sidecastHostingView?.rootView = AnyView(EmptyView())
+    }
+
+    /// Immediately swap the sidecast hosting view's root to the collapsed bar view
+    /// (no animation; used when restoring persisted collapsed state before first display).
+    func swapSidecastContentToBar<Bar: View>(collapsedContent: Bar) {
+        sidecastHostingView?.rootView = AnyView(collapsedContent)
+    }
+
 
     var isVisible: Bool {
         panel?.isVisible == true || sidecastPanel?.isVisible == true

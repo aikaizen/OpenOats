@@ -31,6 +31,7 @@ Display (`Views/SidecastPanelContent.swift`, `Views/SidecastSettingsTab.swift`,
   persona's next message replaces it. This is the new default. The Sidecast
   settings tab exposes it as "Bubble Lifetime".
 - The newest message per persona renders in full. Older ones sit below it,
+- The panel header gains a **Collapse** button (`rectangle.compress.vertical`) that shrinks the sidebar to a 40-pt bar pinned to its top edge (animated); the bar shows a sparkles icon, "Sidecast", a green live dot while a session is active, a "N new" badge for messages received since collapse, and an **Expand** button (`rectangle.expand.vertical`); double-clicking the bar also expands. Collapsed state and the pre-collapse frame are persisted in `sidecastCollapsed` / `sidecastExpandedFrame` (UserDefaults) and restored on relaunch.
   dimmer, clipped to three lines, with a time-ago label.
 - Clicking the newest message text or the expand icon (⤡) in a card header opens a
   **popover** with the persona's full session history: every message newest first,

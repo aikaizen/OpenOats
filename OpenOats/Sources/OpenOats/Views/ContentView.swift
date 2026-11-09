@@ -537,22 +537,56 @@ struct ContentView: View {
         case .classicSuggestions:
             overlayManager.toggle(content: SuggestionPanelContent(engine: coordinator.suggestionEngine))
         case .sidecast:
-            overlayManager.toggleSidecast(content: sidecastContent())
+            if overlayManager.sidecastIsVisible {
+                overlayManager.hideSidecast()
+            } else {
+                overlayManager.showSidecastSidebar(content: sidecastContent())
+                if overlayManager.restoreCollapsedStateIfNeeded() {
+                    overlayManager.swapSidecastContentToBar(collapsedContent: collapsedBarContent())
+                }
+            }
         }
     }
+
 
     private func showSidebarContent() {
         switch settings.sidebarMode {
         case .classicSuggestions:
             overlayManager.showSidePanel(content: SuggestionPanelContent(engine: coordinator.suggestionEngine))
         case .sidecast:
+            // Always show expanded content first so the panel/hosting view is set up,
+            // then immediately apply collapsed state if it was persisted.
             overlayManager.showSidecastSidebar(content: sidecastContent())
+            if overlayManager.restoreCollapsedStateIfNeeded() {
+                // Swap to bar content without animation (panel not yet visible)
+                overlayManager.swapSidecastContentToBar(collapsedContent: collapsedBarContent())
+            }
         }
     }
 
+
     private func sidecastContent() -> SidecastPanelContent {
-        SidecastPanelContent(settings: settings, engine: coordinator.sidecastEngine)
+        SidecastPanelContent(settings: settings, engine: coordinator.sidecastEngine, onCollapse: collapseSidecast)
     }
+
+    private func collapsedBarContent() -> SidecastCollapsedBar {
+        let motesAtCollapse = currentMoteCount()
+        return SidecastCollapsedBar(engine: coordinator.sidecastEngine, motesAtCollapse: motesAtCollapse, onExpand: expandSidecast)
+    }
+
+    private func currentMoteCount() -> Int {
+        guard let eng = coordinator.sidecastEngine else { return 0 }
+        return eng.messagesByPersona.values.reduce(0) { $0 + $1.count }
+    }
+
+    private func collapseSidecast() {
+        overlayManager.collapseSidecast(collapsedContent: collapsedBarContent(), currentMotesCount: currentMoteCount())
+    }
+
+    private func expandSidecast() {
+        overlayManager.expandSidecast(expandedContent: sidecastContent())
+    }
+
 
     private func copyTranscript() {
         guard let controller = liveSessionController else { return }

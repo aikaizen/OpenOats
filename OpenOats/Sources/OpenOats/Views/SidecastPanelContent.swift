@@ -5,11 +5,14 @@ import SwiftUI
 struct SidecastPanelContent: View {
     @Bindable var settings: AppSettings
     let engine: SidecastEngine?
+    let onCollapse: () -> Void
+
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
-            SidecastHeader(engine: engine, isGenerating: engine?.isGenerating ?? false)
+            SidecastHeader(engine: engine, isGenerating: engine?.isGenerating ?? false, onCollapse: onCollapse)
+
 
             Divider().opacity(0.3)
 
@@ -75,6 +78,8 @@ private struct PersonaCardList: View {
 private struct SidecastHeader: View {
     let engine: SidecastEngine?
     let isGenerating: Bool
+    let onCollapse: () -> Void
+
 
     var body: some View {
         HStack(spacing: 8) {
@@ -94,8 +99,18 @@ private struct SidecastHeader: View {
                 .background(
                     Capsule().fill(isGenerating ? Color.orange : Color.green)
                 )
-
             Spacer()
+
+            // Collapse to bar button
+            Button {
+                onCollapse()
+            } label: {
+                Image(systemName: "rectangle.compress.vertical")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .help("Collapse to bar")
 
             // Recap buttons (disabled when no session or already recapping)
             let hasSession = engine?.sessionID != nil
@@ -439,5 +454,76 @@ extension PersonaAvatarTint {
         case .pink: Color(red: 0.72, green: 0.28, blue: 0.52)
         case .indigo: Color(red: 0.35, green: 0.28, blue: 0.65)
         }
+    }
+}
+
+// MARK: - Collapsed Bar
+
+/// Thin 40-pt bar shown when the sidebar is collapsed.
+/// Owns the expand button, live recording dot, and new-motes badge.
+struct SidecastCollapsedBar: View {
+    let engine: SidecastEngine?
+    let motesAtCollapse: Int
+    let onExpand: () -> Void
+
+    private var isRecording: Bool { engine?.sessionID != nil }
+
+    private var newMotesCount: Int {
+        guard let eng = engine else { return 0 }
+        let total = eng.messagesByPersona.values.reduce(0) { $0 + $1.count }
+        return max(0, total - motesAtCollapse)
+    }
+
+    var body: some View {
+        ZStack {
+            // Double-click anywhere on the bar to expand
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { onExpand() }
+
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+
+                Text("Sidecast")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+
+                // Live recording dot
+                if isRecording {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 7, height: 7)
+                }
+
+                // New-motes badge
+                let count = newMotesCount
+                if count > 0 {
+                    Text("\(count) new")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.blue.opacity(0.75)))
+                }
+
+                Spacer()
+
+                // Expand button
+                Button {
+                    onExpand()
+                } label: {
+                    Image(systemName: "rectangle.expand.vertical")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+                .help("Expand")
+            }
+            .padding(.horizontal, 14)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(red: 0.08, green: 0.08, blue: 0.12).opacity(0.95))
     }
 }

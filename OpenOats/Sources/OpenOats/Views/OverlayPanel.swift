@@ -54,6 +54,7 @@ final class OverlayManager: ObservableObject {
     }
 
     let sidecastCollapseState = SidecastCollapseState()
+    private var isAnimatingSidecastCollapse = false
     private static let collapsedBarHeight: CGFloat = 40
 
     private var sidecastPanel: OverlayPanel?
@@ -145,7 +146,9 @@ final class OverlayManager: ObservableObject {
     /// `collapsedContent` replaces the panel's SwiftUI content while collapsed.
     /// `currentMotesCount` is snapshotted for the "N new" badge.
     func collapseSidecast<Bar: View>(collapsedContent: Bar, currentMotesCount: Int) {
-        guard let panel = sidecastPanel, !sidecastCollapseState.isCollapsed else { return }
+        guard let panel = sidecastPanel,
+              !sidecastCollapseState.isCollapsed,
+              !isAnimatingSidecastCollapse else { return }
 
         let expandedFrame = panel.frame
         sidecastCollapseState.expandedFrame = expandedFrame
@@ -172,11 +175,24 @@ final class OverlayManager: ObservableObject {
         // Swap content first so SwiftUI doesn't fight the resize
         sidecastHostingView?.rootView = AnyView(collapsedContent)
 
-        NSAnimationContext.runAnimationGroup { ctx in
+        // Hide traffic lights so the standard buttons don't appear on the narrow bar.
+        for btn in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(btn)?.isHidden = true
+        }
+
+        isAnimatingSidecastCollapse = true
+        // Remove .resizable during the animation so AppKit doesn't fight the fixed bar height.
+        panel.styleMask.remove(.resizable)
+        NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(collapsedRect, display: true)
-        }
+        }, completionHandler: { [weak self, weak panel] in
+            Task { @MainActor in
+                panel?.styleMask.insert(.resizable)
+                self?.isAnimatingSidecastCollapse = false
+            }
+        })
 
         sidecastCollapseState.isCollapsed = true
     }
@@ -184,7 +200,9 @@ final class OverlayManager: ObservableObject {
     /// Expand the sidecast sidebar back to its saved frame (animated).
     /// `expandedContent` replaces the bar's SwiftUI content after expansion.
     func expandSidecast<Content: View>(expandedContent: Content) {
-        guard let panel = sidecastPanel, sidecastCollapseState.isCollapsed else { return }
+        guard let panel = sidecastPanel,
+              sidecastCollapseState.isCollapsed,
+              !isAnimatingSidecastCollapse else { return }
 
         let screen = NSScreen.main ?? NSScreen.screens.first
         let screenFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -198,27 +216,43 @@ final class OverlayManager: ObservableObject {
         } else {
             restoredFrame = sidecastCollapseState.expandedFrame
         }
-        let targetFrame = restoredFrame == .zero
-            ? NSRect(
-                x: screenFrame.maxX - Self.sidecastDefaultWidth,
-                y: screenFrame.minY,
-                width: Self.sidecastDefaultWidth,
-                height: screenFrame.height)
-            : restoredFrame
+
+        // Fall back to default if zero or off every screen.
+        let defaultFrame = NSRect(
+            x: screenFrame.maxX - Self.sidecastDefaultWidth,
+            y: screenFrame.minY,
+            width: Self.sidecastDefaultWidth,
+            height: screenFrame.height)
+        let targetFrame: NSRect
+        if restoredFrame == .zero
+            || !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(restoredFrame) }) {
+            targetFrame = defaultFrame
+        } else {
+            targetFrame = restoredFrame
+        }
 
         // Restore min/max before animating so AppKit allows the resize
         panel.minSize = NSSize(width: Self.sidecastMinWidth, height: 300)
         panel.maxSize = NSSize(width: Self.sidecastMaxWidth, height: screenFrame.height)
 
+        // Restore traffic lights before expanding so they reappear as the panel grows.
+        for btn in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(btn)?.isHidden = false
+        }
+
+        isAnimatingSidecastCollapse = true
+        // Remove .resizable during the animation to prevent AppKit resize interference.
+        panel.styleMask.remove(.resizable)
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(targetFrame, display: true)
-        }, completionHandler: { [weak panel] in
-            // Re-enable autosave only after the expanded frame is in place.
-            // completionHandler runs on the main thread; annotate explicitly to
-            // satisfy the main-actor isolation check.
+        }, completionHandler: { [weak self, weak panel] in
             Task { @MainActor in
+                panel?.styleMask.insert(.resizable)
+                self?.isAnimatingSidecastCollapse = false
+                // Re-enable autosave only after the expanded frame is in place;
+                // this resumes position tracking — it does not trigger a synchronous write.
                 panel?.setFrameAutosaveName("SidecastSidebar")
             }
         })
@@ -248,18 +282,36 @@ final class OverlayManager: ObservableObject {
         sidecastCollapseState.isCollapsed = true
         // If the panel already exists, snap it to bar height immediately (no animation)
         if let panel = sidecastPanel {
-            let ef = sidecastCollapseState.expandedFrame
-            if ef != .zero {
-                let barRect = NSRect(
-                    x: ef.minX,
-                    y: ef.maxY - Self.collapsedBarHeight,
-                    width: ef.width,
-                    height: Self.collapsedBarHeight
-                )
-                panel.setFrameAutosaveName("")
-                panel.minSize = NSSize(width: Self.sidecastMinWidth, height: Self.collapsedBarHeight)
-                panel.maxSize = NSSize(width: Self.sidecastMaxWidth, height: Self.collapsedBarHeight)
-                panel.setFrame(barRect, display: false)
+            let screen = NSScreen.main ?? NSScreen.screens.first
+            let screenFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            let defaultExpandedFrame = NSRect(
+                x: screenFrame.maxX - Self.sidecastDefaultWidth,
+                y: screenFrame.minY,
+                width: Self.sidecastDefaultWidth,
+                height: screenFrame.height)
+            // Validate expanded frame against all screens; replace with default if off every screen.
+            let rawEF = sidecastCollapseState.expandedFrame
+            let ef: NSRect
+            if rawEF == .zero
+                || !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(rawEF) }) {
+                ef = defaultExpandedFrame
+                sidecastCollapseState.expandedFrame = ef
+            } else {
+                ef = rawEF
+            }
+            let barRect = NSRect(
+                x: ef.minX,
+                y: ef.maxY - Self.collapsedBarHeight,
+                width: ef.width,
+                height: Self.collapsedBarHeight
+            )
+            panel.setFrameAutosaveName("")
+            panel.minSize = NSSize(width: Self.sidecastMinWidth, height: Self.collapsedBarHeight)
+            panel.maxSize = NSSize(width: Self.sidecastMaxWidth, height: Self.collapsedBarHeight)
+            panel.setFrame(barRect, display: false)
+            // Hide traffic lights — panel is about to appear as the collapsed bar.
+            for btn in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+                panel.standardWindowButton(btn)?.isHidden = true
             }
         }
         return true

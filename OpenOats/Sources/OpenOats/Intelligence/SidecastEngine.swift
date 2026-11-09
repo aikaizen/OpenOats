@@ -39,6 +39,10 @@ final class SidecastEngine {
         set { withMutation(keyPath: \.feedbackByMessageID) { _feedbackByMessageID = newValue } }
     }
 
+    // MARK: - Global feedback cache (loaded once per app run, lazily on first use)
+    // nil = not yet loaded; non-nil = loaded (possibly empty).
+    private var globalFeedbackCache: [SidecastHistoryStore.GlobalFeedbackRecord]? = nil
+
     @ObservationIgnored nonisolated(unsafe) private var _isRecapping = false
     private(set) var isRecapping: Bool {
         get { access(keyPath: \.isRecapping); return _isRecapping }
@@ -60,7 +64,7 @@ final class SidecastEngine {
         messagesByPersona.values
             .flatMap { $0 }
             .sorted { $0.timestamp > $1.timestamp }
-            .map { Suggestion(text: "\($0.personaName): \($0.text)") }
+            .map { Suggestion(text: "\($0.personaName): \(feedbackByMessageID[$0.id]?.editedText ?? $0.text)") }
     }
 
     private let client = OpenRouterClient()
@@ -221,13 +225,32 @@ final class SidecastEngine {
         )
         feedbackByMessageID[messageID] = fb
         let entry = SidecastHistoryEntry.feedback(fb)
-        history.append(entry)
         historyStore.append(entry)
+        // Update global feedback: append to disk, update in-memory cache, trim if needed.
         historyStore.appendGlobalFeedback(
             feedback: fb,
             personaName: personaName,
             originalText: originalText
         )
+        let newRecord = SidecastHistoryStore.GlobalFeedbackRecord(
+            messageID: fb.messageID,
+            personaID: fb.personaID,
+            personaName: personaName,
+            originalText: originalText,
+            editedText: fb.editedText,
+            rating: fb.rating,
+            note: fb.note,
+            timestamp: fb.updatedAt
+        )
+        if globalFeedbackCache != nil {
+            globalFeedbackCache!.append(newRecord)
+        }
+        // Cap: trim the file (and in-memory cache) when over 1,000 lines.
+        if (globalFeedbackCache?.count ?? 0) > 1_000 {
+            historyStore.trimGlobalFeedbackIfNeeded()
+            // Reload cache to match trimmed state on disk.
+            globalFeedbackCache = historyStore.loadGlobalFeedback()
+        }
     }
 
     func clear() {
@@ -593,6 +616,14 @@ final class SidecastEngine {
         return f
     }()
 
+    /// Returns the global feedback cache, loading from disk once per app run if needed.
+    private func loadGlobalFeedbackIfNeeded() -> [SidecastHistoryStore.GlobalFeedbackRecord] {
+        if let cached = globalFeedbackCache { return cached }
+        let loaded = historyStore.loadGlobalFeedback()
+        globalFeedbackCache = loaded
+        return loaded
+    }
+
     private func buildPrompt(
         utterance: Utterance,
         recentExchange: [Utterance],
@@ -713,7 +744,7 @@ final class SidecastEngine {
                 }
             }
             // Global feedback per personaID
-            let globalRecords = historyStore.loadGlobalFeedback()
+            let globalRecords = loadGlobalFeedbackIfNeeded()
             var globalLines: [UUID: [(Date, String)]] = [:]
             for record in globalRecords {
                 let text: String

@@ -67,16 +67,18 @@ final class SidecastHistoryStore {
 
     /// Appends a feedback event to the cross-session global file at
     /// `~/Library/Application Support/OpenOats/sidecast-feedback.jsonl`.
-    /// Errors are silently swallowed.
+    /// Always enforces 0600. Returns the raw JSONL line written (for the engine to cache),
+    /// or nil if encoding/opening failed. Errors are otherwise silently swallowed.
+    @discardableResult
     func appendGlobalFeedback(
         feedback: MoteFeedback,
         personaName: String,
         originalText: String
-    ) {
+    ) -> Data? {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first
-        guard let appSupport else { return }
+        guard let appSupport else { return nil }
         let dir = appSupport.appendingPathComponent("OpenOats", isDirectory: true)
         let fm = FileManager.default
         if !fm.fileExists(atPath: dir.path) {
@@ -85,6 +87,10 @@ final class SidecastHistoryStore {
         let url = dir.appendingPathComponent("sidecast-feedback.jsonl")
         if !fm.fileExists(atPath: url.path) {
             fm.createFile(atPath: url.path, contents: nil)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } else {
+            // Repair permissions on an existing file that may be 0644.
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         }
         // Build a flat record for easy loading
         struct FeedbackRecord: Encodable {
@@ -107,13 +113,44 @@ final class SidecastHistoryStore {
             note: feedback.note,
             timestamp: feedback.updatedAt
         )
-        guard let data = try? Self.encoder.encode(record) else { return }
+        guard let data = try? Self.encoder.encode(record) else { return nil }
         var line = data
         line.append(contentsOf: [0x0A])
         if let fh = try? FileHandle(forWritingTo: url) {
             fh.seekToEndOfFile()
             fh.write(line)
             try? fh.close()
+        } else {
+            return nil
+        }
+        return line
+    }
+
+    /// If the global feedback file exceeds 1,000 lines, rewrites it atomically keeping
+    /// the newest 1,000. The rewritten file is set 0600.
+    func trimGlobalFeedbackIfNeeded() {
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first
+        guard let appSupport else { return }
+        let url = appSupport
+            .appendingPathComponent("OpenOats", isDirectory: true)
+            .appendingPathComponent("sidecast-feedback.jsonl")
+        guard let raw = try? Data(contentsOf: url) else { return }
+        let lines = raw.split(separator: 0x0A, omittingEmptySubsequences: true)
+        guard lines.count > 1_000 else { return }
+        let kept = lines.suffix(1_000)
+        var newData = Data(kept.joined(separator: Data([0x0A])))
+        newData.append(contentsOf: [0x0A])
+        let tmp = url.deletingLastPathComponent()
+            .appendingPathComponent("sidecast-feedback.jsonl.tmp")
+        let fm = FileManager.default
+        do {
+            try newData.write(to: tmp, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
+            _ = try fm.replaceItemAt(url, withItemAt: tmp)
+        } catch {
+            try? fm.removeItem(at: tmp)
         }
     }
 

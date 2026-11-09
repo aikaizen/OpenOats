@@ -39,11 +39,13 @@ struct RecapEntry: Identifiable, Codable, Sendable, Equatable {
 enum SidecastHistoryEntry: Identifiable, Codable, Sendable, Equatable {
     case message(SidecastMessage)
     case recap(RecapEntry)
+    case feedback(MoteFeedback)
 
     var id: UUID {
         switch self {
         case .message(let m): return m.id
         case .recap(let r): return r.id
+        case .feedback(let f): return f.messageID
         }
     }
 
@@ -51,6 +53,7 @@ enum SidecastHistoryEntry: Identifiable, Codable, Sendable, Equatable {
         switch self {
         case .message(let m): return m.timestamp
         case .recap(let r): return r.createdAt
+        case .feedback(let f): return f.updatedAt
         }
     }
 
@@ -58,14 +61,16 @@ enum SidecastHistoryEntry: Identifiable, Codable, Sendable, Equatable {
         switch self {
         case .message(let m): return m.text
         case .recap(let r): return r.text
+        case .feedback(let f): return f.editedText ?? ""
         }
     }
 
-    /// Persona name for messages; windowLabel for recaps.
+    /// Persona name for messages; windowLabel for recaps; "feedback" for feedback.
     var title: String {
         switch self {
         case .message(let m): return m.personaName
         case .recap(let r): return r.windowLabel
+        case .feedback: return "feedback"
         }
     }
 
@@ -76,7 +81,7 @@ enum SidecastHistoryEntry: Identifiable, Codable, Sendable, Equatable {
     }
 
     private enum EntryType: String, Codable {
-        case message, recap
+        case message, recap, feedback
     }
 
     init(from decoder: Decoder) throws {
@@ -87,6 +92,8 @@ enum SidecastHistoryEntry: Identifiable, Codable, Sendable, Equatable {
             self = .message(try container.decode(SidecastMessage.self, forKey: .payload))
         case .recap:
             self = .recap(try container.decode(RecapEntry.self, forKey: .payload))
+        case .feedback:
+            self = .feedback(try container.decode(MoteFeedback.self, forKey: .payload))
         }
     }
 
@@ -99,6 +106,9 @@ enum SidecastHistoryEntry: Identifiable, Codable, Sendable, Equatable {
         case .recap(let r):
             try container.encode(EntryType.recap, forKey: .type)
             try container.encode(r, forKey: .payload)
+        case .feedback(let f):
+            try container.encode(EntryType.feedback, forKey: .type)
+            try container.encode(f, forKey: .payload)
         }
     }
 }

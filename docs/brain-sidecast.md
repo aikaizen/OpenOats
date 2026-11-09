@@ -123,6 +123,80 @@ the remote side *before* the remote transcription finished. The live transcript
 file (`transcript.live.jsonl`) is not rewritten; the batch re-transcription pass
 and the downstream motes pipeline perform an independent dedup pass.
 
+## Feedback on motes
+
+The host can rate, edit, and annotate each on-screen advice bubble ("mote") during
+or after the call. Advisors use that feedback to improve within the session and in
+later sessions.
+
+### Controls
+
+Each mote row in the **card** (newest message), **pop-open history**, and **History
+window** carries four controls:
+
+| Control | Behaviour |
+| --- | --- |
+| 👍 thumbs-up | Toggle "liked"; tinted green when set. |
+| 👎 thumbs-down | Toggle "disliked"; tinted red when set; pair with a note for context. |
+| ✏️ pencil | Open an inline `TextEditor` to rewrite the mote. Save commits; Cancel discards. Right-click (or long-press) the pencil shows "Revert to original". A small **edited** badge appears on the mote after saving. |
+| 💬 bubble | Open a small popover text field to attach a free-text note. |
+
+Controls appear **on hover** in the card and are **always visible** in the
+pop-open history and the History window.
+
+### Persistence
+
+Every feedback action appends a `.feedback(MoteFeedback)` entry to
+`<session>/sidecast.jsonl` (append-only; latest per `messageID` wins on load).
+Old session files that predate this feature load without errors — unknown entry
+types are silently skipped.
+
+Each feedback event is also appended to the cross-session file
+`~/Library/Application Support/OpenOats/sidecast-feedback.jsonl` which stores
+`personaID`, `personaName`, `originalText`, `editedText`, `rating`, `note`, and
+`timestamp` as one JSON line per event.
+
+### Prompt injection
+
+When `SidecastEngine.buildPrompt` runs, it builds a per-persona feedback block
+from up to **6** most-recent examples (this session first, then the global file,
+newest first, ≤ 1,500 characters total per persona) and appends it to the
+persona stanza:
+
+```
+Host feedback on your past messages:
+    liked: The Fed hiked rates 11 times in 18 months, from near-zero to 5.25–5.5%.
+    disliked: Inflation is higher than expected. (too vague — give the exact CPI number)
+    host rewrote "Rates are elevated" as "Fed funds rate is 5.25–5.5%, highest since 2001."
+Lean toward what was liked; avoid what was disliked.
+```
+
+### Markdown export
+
+The History window's **Export Markdown** button writes `<session>/sidecast.md`.
+Message blocks now include rating (👍 / 👎) and note inline; edited text replaces
+the original in the exported block with an *(edited)* annotation.
+
+### Key types
+
+```swift
+enum MoteRating: String, Codable { case up, down }
+
+struct MoteFeedback: Codable, Sendable, Equatable {
+    let messageID: UUID
+    let personaID: UUID
+    var rating: MoteRating?
+    var editedText: String?
+    var note: String?
+    let updatedAt: Date
+}
+```
+
+`SidecastEngine` exposes:
+- `func feedback(for messageID: UUID) -> MoteFeedback?`
+- `func setFeedback(messageID:rating:editedText:note:)` — persists to session JSONL and global file; appends `.feedback` to observable `history`.
+- `var feedbackByMessageID: [UUID: MoteFeedback]` — observable, keyed by message UUID.
+
 ## Setting it up without the UI
 
 All settings live in the `com.openoats.app` defaults domain. Quit OpenOats

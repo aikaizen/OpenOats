@@ -65,6 +65,90 @@ final class SidecastHistoryStore {
         fileHandle?.write(line)
     }
 
+    /// Appends a feedback event to the cross-session global file at
+    /// `~/Library/Application Support/OpenOats/sidecast-feedback.jsonl`.
+    /// Errors are silently swallowed.
+    func appendGlobalFeedback(
+        feedback: MoteFeedback,
+        personaName: String,
+        originalText: String
+    ) {
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first
+        guard let appSupport else { return }
+        let dir = appSupport.appendingPathComponent("OpenOats", isDirectory: true)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let url = dir.appendingPathComponent("sidecast-feedback.jsonl")
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: nil)
+        }
+        // Build a flat record for easy loading
+        struct FeedbackRecord: Encodable {
+            let messageID: UUID
+            let personaID: UUID
+            let personaName: String
+            let originalText: String
+            let editedText: String?
+            let rating: MoteRating?
+            let note: String?
+            let timestamp: Date
+        }
+        let record = FeedbackRecord(
+            messageID: feedback.messageID,
+            personaID: feedback.personaID,
+            personaName: personaName,
+            originalText: originalText,
+            editedText: feedback.editedText,
+            rating: feedback.rating,
+            note: feedback.note,
+            timestamp: feedback.updatedAt
+        )
+        guard let data = try? Self.encoder.encode(record) else { return }
+        var line = data
+        line.append(contentsOf: [0x0A])
+        if let fh = try? FileHandle(forWritingTo: url) {
+            fh.seekToEndOfFile()
+            fh.write(line)
+            try? fh.close()
+        }
+    }
+
+    // MARK: - Load global feedback
+
+    /// Struct mirroring the FeedbackRecord written by appendGlobalFeedback.
+    struct GlobalFeedbackRecord: Decodable {
+        let messageID: UUID
+        let personaID: UUID
+        let personaName: String
+        let originalText: String
+        let editedText: String?
+        let rating: MoteRating?
+        let note: String?
+        let timestamp: Date
+    }
+
+    func loadGlobalFeedback() -> [GlobalFeedbackRecord] {
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first
+        guard let appSupport else { return [] }
+        let url = appSupport
+            .appendingPathComponent("OpenOats", isDirectory: true)
+            .appendingPathComponent("sidecast-feedback.jsonl")
+        guard let raw = try? Data(contentsOf: url) else { return [] }
+        var results: [GlobalFeedbackRecord] = []
+        for line in raw.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            if let record = try? Self.decoder.decode(GlobalFeedbackRecord.self, from: Data(line)) {
+                results.append(record)
+            }
+        }
+        return results
+    }
+
     // MARK: - Read
 
     func load(sessionID: String) -> [SidecastHistoryEntry] {
@@ -85,6 +169,7 @@ final class SidecastHistoryStore {
     // MARK: - Export
 
     /// Writes `<session>/sidecast.md` and returns the URL.
+    /// Feedback entries include rating/note; latest feedback per messageID wins.
     @discardableResult
     func exportMarkdown(sessionID: String) -> URL? {
         guard let base = sessionsDirectoryURL else { return nil }
@@ -93,13 +178,50 @@ final class SidecastHistoryStore {
         let entries = load(sessionID: sessionID)
         let tf = SidecastHistoryStore.absoluteFormatter
 
+        // Build a lookup: latest feedback per messageID
+        var feedbackByMessageID: [UUID: MoteFeedback] = [:]
+        for entry in entries {
+            if case .feedback(let f) = entry {
+                if let existing = feedbackByMessageID[f.messageID] {
+                    if f.updatedAt > existing.updatedAt {
+                        feedbackByMessageID[f.messageID] = f
+                    }
+                } else {
+                    feedbackByMessageID[f.messageID] = f
+                }
+            }
+        }
+
         var lines: [String] = ["# Sidecast history — \(sessionID)", ""]
         for entry in entries {
-            let timeStr = tf.string(from: entry.timestamp)
-            lines.append("### \(timeStr) · \(entry.title)")
-            lines.append("")
-            lines.append(entry.text)
-            lines.append("")
+            switch entry {
+            case .feedback:
+                continue // skip raw feedback entries; inlined into message blocks
+            case .message(let m):
+                let timeStr = tf.string(from: m.timestamp)
+                lines.append("### \(timeStr) · \(m.personaName)")
+                lines.append("")
+                if let fb = feedbackByMessageID[m.id], let edited = fb.editedText {
+                    lines.append(edited)
+                    lines.append("")
+                    lines.append("*(edited)*")
+                } else {
+                    lines.append(m.text)
+                }
+                if let fb = feedbackByMessageID[m.id] {
+                    var meta: [String] = []
+                    if let r = fb.rating { meta.append(r == .up ? "👍" : "👎") }
+                    if let n = fb.note, !n.isEmpty { meta.append("note: \(n)") }
+                    if !meta.isEmpty { lines.append(""); lines.append(meta.joined(separator: "  ·  ")) }
+                }
+                lines.append("")
+            case .recap(let r):
+                let timeStr = tf.string(from: r.createdAt)
+                lines.append("### \(timeStr) · \(r.windowLabel)")
+                lines.append("")
+                lines.append(r.text)
+                lines.append("")
+            }
         }
         let markdown = lines.joined(separator: "\n")
         try? markdown.write(to: outURL, atomically: true, encoding: .utf8)

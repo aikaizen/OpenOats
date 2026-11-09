@@ -141,3 +141,18 @@ struct SidecastMessage: Identifiable, Codable, Sendable, Equatable {
         self.sourceBreadcrumb = sourceBreadcrumb
     }
 }
+
+// MARK: - Mote Feedback
+
+enum MoteRating: String, Codable {
+    case up, down
+}
+
+struct MoteFeedback: Codable, Sendable, Equatable {
+    let messageID: UUID
+    let personaID: UUID
+    var rating: MoteRating?
+    var editedText: String?
+    var note: String?
+    let updatedAt: Date
+}

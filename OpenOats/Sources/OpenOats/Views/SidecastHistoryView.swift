@@ -48,8 +48,8 @@ struct SidecastHistoryView: View {
     }
 
     private var filteredEntries: [SidecastHistoryEntry] {
-        var entries = engine.history
-
+        // Exclude raw feedback entries — they're shown inline on message rows, not as separate rows
+        var entries = engine.history.filter { if case .feedback = $0 { return false }; return true }
         // Apply filter chip
         switch filterChip {
         case .all:
@@ -162,7 +162,7 @@ struct SidecastHistoryView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(entries) { entry in
-                            HistoryEntryRow(entry: entry)
+                            HistoryEntryRow(entry: entry, engine: engine)
                             Divider().opacity(0.12).padding(.horizontal, 16)
                         }
                     }
@@ -179,6 +179,7 @@ struct SidecastHistoryView: View {
 
 private struct HistoryEntryRow: View {
     let entry: SidecastHistoryEntry
+    let engine: SidecastEngine
     @State private var copied = false
 
     private static let timeFormatter: DateFormatter = {
@@ -192,6 +193,14 @@ private struct HistoryEntryRow: View {
             return m.personaID.tintColor
         }
         return Color(red: 0.4, green: 0.45, blue: 0.55) // slate for recaps
+    }
+
+    /// For message entries: editedText ?? text. For recaps: text.
+    private var displayText: String {
+        if case .message(let m) = entry {
+            return engine.feedback(for: m.id)?.editedText ?? m.text
+        }
+        return entry.text
     }
 
     var body: some View {
@@ -208,11 +217,21 @@ private struct HistoryEntryRow: View {
                     .padding(.vertical, 2)
                     .background(Capsule().fill(badgeColor.opacity(0.45)))
 
+                // "edited" tag for messages that have been edited
+                if case .message(let m) = entry, engine.feedback(for: m.id)?.editedText != nil {
+                    Text("edited")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                }
+
                 Spacer()
 
                 Button {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(entry.text, forType: .string)
+                    NSPasteboard.general.setString(displayText, forType: .string)
                     copied = true
                     Task {
                         try? await Task.sleep(for: .seconds(1.5))
@@ -227,12 +246,22 @@ private struct HistoryEntryRow: View {
                 .help("Copy")
             }
 
-            Text(entry.text)
+            Text(displayText)
                 .font(.system(size: 12))
                 .foregroundStyle(.white.opacity(0.85))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Feedback controls — always visible in history, only for message entries
+            if case .message(let m) = entry {
+                MoteFeedbackControls(
+                    messageID: m.id,
+                    originalText: m.text,
+                    engine: engine,
+                    alwaysVisible: true
+                )
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

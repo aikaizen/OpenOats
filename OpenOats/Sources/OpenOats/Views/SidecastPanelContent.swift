@@ -244,12 +244,25 @@ private struct SidecastPersonaCard: View {
 
                 // Message text — tapping it also opens the popover
                 if let visibleMessage {
-                    Text(visibleMessage.text)
+                    let newestFeedback = engine?.feedback(for: visibleMessage.id)
+                    let newestDisplayText = newestFeedback?.editedText ?? visibleMessage.text
+
+                    Text(newestDisplayText)
                         .font(.system(size: 13))
                         .foregroundStyle(.white.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                         .onTapGesture { isExpanded.toggle() }
+
+                    // "edited" tag
+                    if newestFeedback?.editedText != nil {
+                        Text("edited")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.white.opacity(0.12)))
+                    }
 
                     // Confidence + time
                     HStack(spacing: 6) {
@@ -271,10 +284,22 @@ private struct SidecastPersonaCard: View {
                         }
                     }
 
+                    // Feedback controls — hover-only on the card
+                    if let engine {
+                        MoteFeedbackControls(
+                            messageID: visibleMessage.id,
+                            originalText: visibleMessage.text,
+                            engine: engine,
+                            alwaysVisible: false
+                        )
+                    }
+
                     // Older messages
                     ForEach(Array(visibleMessages.dropFirst()), id: \.id) { older in
+                        let olderFeedback = engine?.feedback(for: older.id)
+                        let olderDisplayText = olderFeedback?.editedText ?? older.text
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(older.text)
+                            Text(olderDisplayText)
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.5))
                                 .lineLimit(3)
@@ -282,6 +307,14 @@ private struct SidecastPersonaCard: View {
                                 Text(timeAgo)
                                     .font(.system(size: 10))
                                     .foregroundStyle(.white.opacity(0.3))
+                            }
+                            if let engine {
+                                MoteFeedbackControls(
+                                    messageID: older.id,
+                                    originalText: older.text,
+                                    engine: engine,
+                                    alwaysVisible: false
+                                )
                             }
                         }
                         .padding(.top, 6)

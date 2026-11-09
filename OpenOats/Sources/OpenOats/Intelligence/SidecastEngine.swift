@@ -32,6 +32,13 @@ final class SidecastEngine {
         set { withMutation(keyPath: \.history) { _history = newValue } }
     }
 
+    // MARK: - Feedback (mote ratings/edits/notes)
+    @ObservationIgnored nonisolated(unsafe) private var _feedbackByMessageID: [UUID: MoteFeedback] = [:]
+    private(set) var feedbackByMessageID: [UUID: MoteFeedback] {
+        get { access(keyPath: \.feedbackByMessageID); return _feedbackByMessageID }
+        set { withMutation(keyPath: \.feedbackByMessageID) { _feedbackByMessageID = newValue } }
+    }
+
     @ObservationIgnored nonisolated(unsafe) private var _isRecapping = false
     private(set) var isRecapping: Bool {
         get { access(keyPath: \.isRecapping); return _isRecapping }
@@ -181,6 +188,48 @@ final class SidecastEngine {
         fullHistoryByPersona[personaID] ?? []
     }
 
+    // MARK: - Feedback
+
+    func feedback(for messageID: UUID) -> MoteFeedback? {
+        feedbackByMessageID[messageID]
+    }
+
+    /// Set (or update) feedback for a mote. Persists to session .jsonl and cross-session global file.
+    func setFeedback(messageID: UUID, rating: MoteRating?, editedText: String?, note: String?) {
+        // Find the message's persona ID and original text from full history
+        let allEntries = history
+        var personaID: UUID? = nil
+        var personaName: String = ""
+        var originalText: String = ""
+        for entry in allEntries {
+            if case .message(let m) = entry, m.id == messageID {
+                personaID = m.personaID
+                personaName = m.personaName
+                originalText = m.text
+                break
+            }
+        }
+        guard let pid = personaID else { return }
+
+        let fb = MoteFeedback(
+            messageID: messageID,
+            personaID: pid,
+            rating: rating,
+            editedText: editedText,
+            note: note,
+            updatedAt: Date.now
+        )
+        feedbackByMessageID[messageID] = fb
+        let entry = SidecastHistoryEntry.feedback(fb)
+        history.append(entry)
+        historyStore.append(entry)
+        historyStore.appendGlobalFeedback(
+            feedback: fb,
+            personaName: personaName,
+            originalText: originalText
+        )
+    }
+
     func clear() {
         generationTask?.cancel()
         generationTask = nil
@@ -199,6 +248,7 @@ final class SidecastEngine {
         lastSpokenAtByPersona.removeAll()
         sessionStartDate = nil
         historyStore.clearSession()
+        feedbackByMessageID.removeAll()
     }
 
     /// Called when `sessionID` property is set.
@@ -215,6 +265,18 @@ final class SidecastEngine {
         let loaded = historyStore.load(sessionID: newID)
         if !loaded.isEmpty {
             history = loaded
+            // Rebuild feedback map from loaded feedback entries; latest per messageID wins
+            var fbMap: [UUID: MoteFeedback] = [:]
+            for entry in loaded {
+                if case .feedback(let f) = entry {
+                    if let existing = fbMap[f.messageID] {
+                        if f.updatedAt > existing.updatedAt { fbMap[f.messageID] = f }
+                    } else {
+                        fbMap[f.messageID] = f
+                    }
+                }
+            }
+            feedbackByMessageID = fbMap
         }
     }
 
@@ -539,17 +601,6 @@ final class SidecastEngine {
         personas: [SidecastPersona],
         evidence: [KBContextPack]
     ) -> [OpenRouterClient.Message] {
-        let personaText = personas.map { persona in
-            """
-            - id: \(persona.id.uuidString)
-              name: \(persona.name)
-              subtitle: \(persona.subtitle)
-              prompt: \(persona.prompt)
-              verbosity: \(persona.verbosity.displayName) (max \(persona.verbosity.characterLimit) chars)
-              cadence: \(persona.cadence.displayName)
-              evidence: \(persona.evidencePolicy.displayName)
-            """
-        }.joined(separator: "\n")
 
         let transcriptText = recentExchange
             .map { "\($0.speaker.displayLabel): \($0.text)" }
@@ -627,6 +678,103 @@ final class SidecastEngine {
             system = systemTemplate
                 .replacingOccurrences(of: "{{maxMessagesPerTurn}}", with: "\(settings.sidecastIntensity.maxMessagesPerTurn)")
         }
+        // Build per-persona feedback block (up to 6 examples, this-session first, then global)
+        let feedbackBlockByPersona: [UUID: String] = {
+            // Session feedback grouped by personaID, newest first
+            var sessionLines: [UUID: [(Date, String)]] = [:]
+            for entry in history {
+                if case .feedback(let f) = entry {
+                    let text: String
+                    if let r = f.rating {
+                        let prefix = r == .up ? "liked" : "disliked"
+                        let original: String = {
+                            for e2 in history {
+                                if case .message(let m) = e2, m.id == f.messageID { return m.text }
+                            }
+                            return ""
+                        }()
+                        if r == .down, let n = f.note, !n.isEmpty {
+                            text = "\(prefix): \(original) (\(n))"
+                        } else {
+                            text = "\(prefix): \(original)"
+                        }
+                    } else if let edited = f.editedText {
+                        let original: String = {
+                            for e2 in history {
+                                if case .message(let m) = e2, m.id == f.messageID { return m.text }
+                            }
+                            return ""
+                        }()
+                        text = "host rewrote \"\(original)\" as \"\(edited)\""
+                    } else {
+                        continue
+                    }
+                    sessionLines[f.personaID, default: []].append((f.updatedAt, text))
+                }
+            }
+            // Global feedback per personaID
+            let globalRecords = historyStore.loadGlobalFeedback()
+            var globalLines: [UUID: [(Date, String)]] = [:]
+            for record in globalRecords {
+                let text: String
+                if let r = record.rating {
+                    let prefix = r == .up ? "liked" : "disliked"
+                    if r == .down, let n = record.note, !n.isEmpty {
+                        text = "\(prefix): \(record.originalText) (\(n))"
+                    } else {
+                        text = "\(prefix): \(record.originalText)"
+                    }
+                } else if let edited = record.editedText {
+                    text = "host rewrote \"\(record.originalText)\" as \"\(edited)\""
+                } else {
+                    continue
+                }
+                globalLines[record.personaID, default: []].append((record.timestamp, text))
+            }
+            var result: [UUID: String] = [:]
+            for persona in personas {
+                // Session first, newest first; then global newest first; dedupe by text
+                var combined: [(Date, String)] = []
+                combined.append(contentsOf: (sessionLines[persona.id] ?? []).sorted { $0.0 > $1.0 })
+                combined.append(contentsOf: (globalLines[persona.id] ?? []).sorted { $0.0 > $1.0 })
+                var seen = Set<String>()
+                var picked: [String] = []
+                var totalChars = 0
+                for (_, line) in combined {
+                    guard picked.count < 6 else { break }
+                    guard seen.insert(line).inserted else { continue }
+                    let candidate = totalChars + line.count + 1
+                    guard candidate <= 1_500 else { break }
+                    picked.append(line)
+                    totalChars = candidate
+                }
+                if !picked.isEmpty {
+                    result[persona.id] = picked.joined(separator: "\n")
+                }
+            }
+            return result
+        }()
+
+        // Persona text with inline feedback block
+        let personaTextWithFeedback = personas.map { persona in
+            var block = """
+            - id: \(persona.id.uuidString)
+              name: \(persona.name)
+              subtitle: \(persona.subtitle)
+              prompt: \(persona.prompt)
+              verbosity: \(persona.verbosity.displayName) (max \(persona.verbosity.characterLimit) chars)
+              cadence: \(persona.cadence.displayName)
+              evidence: \(persona.evidencePolicy.displayName)
+            """
+            if let fb = feedbackBlockByPersona[persona.id] {
+                block += "\n  Host feedback on your past messages:\n"
+                for line in fb.split(separator: "\n", omittingEmptySubsequences: true) {
+                    block += "    \(line)\n"
+                }
+                block += "  Lean toward what was liked; avoid what was disliked."
+            }
+            return block
+        }.joined(separator: "\n")
 
         let user = """
         Latest utterance:
@@ -645,7 +793,7 @@ final class SidecastEngine {
         \(openQuestions)
 
         Personas:
-        \(personaText)
+        \(personaTextWithFeedback)
 
         Evidence:
         \(evidenceText)
